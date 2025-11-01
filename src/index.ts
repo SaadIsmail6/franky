@@ -343,7 +343,16 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
     })
 
 // ============================================================================
-// SERVER - Bun.serve with direct fetch handler
+// ENVIRONMENT VALIDATION
+// ============================================================================
+
+if (!process.env.APP_PRIVATE_DATA || !process.env.JWT_SECRET) {
+    console.error('❌ Missing APP_PRIVATE_DATA or JWT_SECRET')
+    console.error('Please set these environment variables before starting the bot.')
+}
+
+// ============================================================================
+// SERVER - Bun.serve with bulletproof webhook handler
 // ============================================================================
 
 const port = Number(process.env.PORT || 3000)
@@ -355,6 +364,9 @@ Bun.serve({
         const url = new URL(req.url)
         const path = url.pathname
         const method = req.method
+        
+        // Log every request
+        console.log(`[REQ] ${method} ${path}`)
 
         // GET /
         if (method === 'GET' && path === '/') {
@@ -363,56 +375,58 @@ Bun.serve({
 
         // GET /health
         if (method === 'GET' && path === '/health') {
-            return new Response(JSON.stringify({ ok: true }), {
+            return new Response(JSON.stringify({ ok: true, ts: new Date().toISOString() }), {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' },
             })
         }
 
-        // POST /webhook - hand off directly to SDK handler
-        if (method === 'POST' && path === '/webhook') {
-            console.log(`[${new Date().toISOString()}] 📨 POST /webhook received`)
-            
+        // POST /webhook or POST /webhook/
+        if (method === 'POST' && (path === '/webhook' || path === '/webhook/')) {
+            // Safe mode: immediately return 200 without calling SDK
+            if (process.env.WEBHOOK_ALWAYS_200 === 'true') {
+                console.log('[SAFE MODE] Returning 200 without SDK call')
+                console.log('[WEBHOOK] 200')
+                return new Response('OK', { status: 200 })
+            }
+
             // Check if bot is ready
             if (!bot || !webhookHandler) {
-                console.log('⚠️ Bot not ready, returning 503')
-                const res = new Response(JSON.stringify({ error: 'Bot initializing' }), {
+                console.log('[WEBHOOK] 503 - Bot not initialized')
+                return new Response(JSON.stringify({ error: 'Bot initializing' }), {
                     status: 503,
                     headers: { 'Content-Type': 'application/json' },
                 })
-                console.log(`POST /webhook → 503`)
-                return res
             }
 
-            // Hand off directly to SDK handler - DO NOT pre-read or parse body
+            // Bulletproof webhook handler - always return 200 OK unless fatal error
             try {
+                // Hand off directly to SDK handler - DO NOT pre-read or parse body
                 const res = await webhookHandler(req)
                 
-                // Ensure response is a Response instance, default to 200 OK
+                // Ensure we return a Response object
                 if (!(res instanceof Response)) {
-                    console.log(`POST /webhook → 200 (wrapped)`)
+                    console.log('[WEBHOOK] 200 (wrapped non-Response)')
                     return new Response('OK', { status: 200 })
                 }
                 
-                // If response exists but isn't 200, log it (SDK should return 200)
-                const status = res.status || 200
-                console.log(`POST /webhook → ${status}`)
-                
-                // Always return 200 OK for Towns (Towns requires 200)
-                if (status !== 200) {
-                    console.warn(`⚠️ SDK returned ${status}, converting to 200`)
-                    return new Response('OK', { status: 200 })
+                // Always return 200 OK for Towns (even if SDK returns something else)
+                // Log what SDK returned for debugging, but convert to 200
+                const sdkStatus = res.status || 200
+                if (sdkStatus !== 200) {
+                    console.warn(`[WEBHOOK] SDK returned ${sdkStatus}, converting to 200`)
                 }
                 
-                return res
+                console.log('[WEBHOOK] 200')
+                return new Response('OK', { status: 200 })
             } catch (error) {
-                console.error('❌ Webhook error:', error)
+                // Fatal error - log with stack trace and return 500
+                console.error('[WEBHOOK ERROR]', error)
                 if (error instanceof Error && error.stack) {
-                    console.error('Stack trace:', error.stack)
+                    console.error('[WEBHOOK ERROR] Stack trace:', error.stack)
                 }
-                const res = new Response('Webhook failed', { status: 500 })
-                console.log(`POST /webhook → 500`)
-                return res
+                console.log('[WEBHOOK] 500')
+                return new Response('Webhook failed', { status: 500 })
             }
         }
 
