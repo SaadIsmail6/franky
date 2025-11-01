@@ -742,29 +742,20 @@ app.get('/health', () => {
 })
 
 // Towns webhook endpoint - POST only with error handling
-app.post('/webhook', async (c, next) => {
-    if (!bot || !jwtMiddleware || !handler) {
+// Use Hono's middleware pattern: app.post(path, middleware1, middleware2, handler)
+if (bot && jwtMiddleware && handler) {
+    app.post('/webhook', jwtMiddleware, handler)
+} else {
+    // If bot not initialized, return 503
+    app.post('/webhook', async (c) => {
         return c.json({ 
             error: 'Bot not initialized',
             message: 'Bot initialization failed. Check server logs and verify APP_PRIVATE_DATA and JWT_SECRET are valid.'
         }, 503)
-    }
+    })
+}
 
-    try {
-        await jwtMiddleware(c, async () => {
-            await handler(c)
-        })
-    } catch (error) {
-        // Log full error stack for debugging
-        console.error('Webhook error:', error)
-        if (error instanceof Error) {
-            console.error('Stack trace:', error.stack)
-        }
-        throw error // Let onError handle it
-    }
-})
-
-// Reject all non-POST requests to /webhook
+// Reject all non-POST requests to /webhook (must come after POST route)
 app.all('/webhook', (c) => {
     if (c.req.method !== 'POST') {
         return c.json({ error: 'Method not allowed' }, 405)
