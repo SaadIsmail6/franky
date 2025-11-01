@@ -451,52 +451,52 @@ if (bot) {
      * /guess-anime - Play guess the anime game (admin only)
      */
     bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId }) => {
-    // Check admin permission
-    const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-    
-    if (!isAdmin) {
-        await handler.sendMessage(
-            channelId,
-            '❌ This command is admin-only. You don\'t have permission to use it.',
-        )
-        return
-    }
-
-    // Check if there's already an active game in this channel
-    const existingGame = activeTriviaGames.get(channelId)
-    if (existingGame) {
-        await handler.sendMessage(
-            channelId,
-            '❌ There is already an active trivia game in this channel. Wait for it to finish.',
-        )
-        return
-    }
-
-    // Select a random trivia question
-    const randomQuestion = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)]
-
-    // Post the clue
-    await handler.sendMessage(
-        channelId,
-        `**🎮 Guess the Anime**\n\n${randomQuestion.clue}\n\n*You have 60 seconds to answer!*`,
-    )
-
-    // Set up the game
-    const timeoutId = setTimeout(async () => {
-        // Get the game state before cleaning up
-        const game = activeTriviaGames.get(channelId)
+        // Check admin permission
+        const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         
-        // Remove the game from active games
-        activeTriviaGames.delete(channelId)
-
-        // Only send timeout message if no one won
-        if (game && !game.hasWinner && bot) {
-            await bot.sendMessage(
+        if (!isAdmin) {
+            await handler.sendMessage(
                 channelId,
-                `⏰ Time's up! The answer was: **${randomQuestion.answer}**`,
+                '❌ This command is admin-only. You don\'t have permission to use it.',
             )
+            return
         }
-    }, 60000) // 60 seconds
+
+        // Check if there's already an active game in this channel
+        const existingGame = activeTriviaGames.get(channelId)
+        if (existingGame) {
+            await handler.sendMessage(
+                channelId,
+                '❌ There is already an active trivia game in this channel. Wait for it to finish.',
+            )
+            return
+        }
+
+        // Select a random trivia question
+        const randomQuestion = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)]
+
+        // Post the clue
+        await handler.sendMessage(
+            channelId,
+            `**🎮 Guess the Anime**\n\n${randomQuestion.clue}\n\n*You have 60 seconds to answer!*`,
+        )
+
+        // Set up the game
+        const timeoutId = setTimeout(async () => {
+            // Get the game state before cleaning up
+            const game = activeTriviaGames.get(channelId)
+            
+            // Remove the game from active games
+            activeTriviaGames.delete(channelId)
+
+            // Only send timeout message if no one won
+            if (game && !game.hasWinner && bot) {
+                await bot.sendMessage(
+                    channelId,
+                    `⏰ Time's up! The answer was: **${randomQuestion.answer}**`,
+                )
+            }
+        }, 60000) // 60 seconds
 
         // Store the active game
         activeTriviaGames.set(channelId, {
@@ -537,152 +537,154 @@ if (bot) {
      * /ban - Ban a user from the space (admin only)
      */
     bot.onSlashCommand('ban', async (handler, { channelId, userId, spaceId, mentions, args }) => {
-    // Check admin permission
-    const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-    
-    if (!isAdmin) {
-        await handler.sendMessage(
-            channelId,
-            '❌ This command is admin-only. You don\'t have permission to ban users.',
-        )
-        return
-    }
-
-    // Get user to ban (from mentions or args)
-    const userToBan = mentions[0]?.userId || args[0]
-    
-    if (!userToBan) {
-        await handler.sendMessage(
-            channelId,
-            '❌ Please mention a user or provide a user ID.\n' +
-            'Usage: `/ban @user` or `/ban <userId>`',
-        )
-        return
-    }
-
-    // Validate user ID format (should be hex address)
-    if (!userToBan.startsWith('0x') || userToBan.length !== 42) {
-        await handler.sendMessage(
-            channelId,
-            '❌ Invalid user ID format. Please mention the user or provide a valid address.',
-        )
-        return
-    }
-
-    try {
-        // Attempt to ban the user (bot must have ModifyBanning permission)
-        await handler.ban(userToBan, spaceId)
+        // Check admin permission
+        const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         
-        const displayName = mentions[0]?.displayName || userToBan
+        if (!isAdmin) {
+            await handler.sendMessage(
+                channelId,
+                '❌ This command is admin-only. You don\'t have permission to ban users.',
+            )
+            return
+        }
+
+        // Get user to ban (from mentions or args)
+        const userToBan = mentions[0]?.userId || args[0]
+        
+        if (!userToBan) {
+            await handler.sendMessage(
+                channelId,
+                '❌ Please mention a user or provide a user ID.\n' +
+                'Usage: `/ban @user` or `/ban <userId>`',
+            )
+            return
+        }
+
+        // Validate user ID format (should be hex address)
+        if (!userToBan.startsWith('0x') || userToBan.length !== 42) {
+            await handler.sendMessage(
+                channelId,
+                '❌ Invalid user ID format. Please mention the user or provide a valid address.',
+            )
+            return
+        }
+
+        try {
+            // Attempt to ban the user (bot must have ModifyBanning permission)
+            await handler.ban(userToBan, spaceId)
+            
+            const displayName = mentions[0]?.displayName || userToBan
+            const timestamp = new Date().toISOString()
+            console.log(`[${timestamp}] 🔨 Moderation: User ${userToBan} (${displayName}) banned from space ${spaceId} by ${userId}`)
+            
+            await handler.sendMessage(
+                channelId,
+                `✅ Successfully banned <@${userToBan}> (${displayName}) from the space.`,
+            )
+        } catch (error) {
+            const timestamp = new Date().toISOString()
+            console.error(`[${timestamp}] ❌ Ban error:`, error)
+            await handler.sendMessage(
+                channelId,
+                `❌ Failed to ban user: ${error instanceof Error ? error.message : 'Unknown error'}\n` +
+                `Make sure the bot has ModifyBanning permission.`,
+            )
+        }
+    })
+
+    /**
+     * /mute - Mute a user in the channel (admin only)
+     * Note: Actual muting functionality depends on Towns API capabilities
+     */
+        bot.onSlashCommand('mute', async (handler, { channelId, userId, spaceId, mentions, args }) => {
+        // Check admin permission
+        const isAdmin = await handler.hasAdminPermission(userId, spaceId)
+        
+        if (!isAdmin) {
+            await handler.sendMessage(
+                channelId,
+                '❌ This command is admin-only. You don\'t have permission to mute users.',
+            )
+            return
+        }
+
+        // Get user to mute (from mentions or args)
+        const userToMute = mentions[0]?.userId || args[0]
+        
+        if (!userToMute) {
+            await handler.sendMessage(
+                channelId,
+                '❌ Please mention a user or provide a user ID.\n' +
+                'Usage: `/mute @user` or `/mute @user 10m`',
+            )
+            return
+        }
+
+        // TODO: Implement actual muting when Towns API supports it
+        // For now, just acknowledge the command
+        const displayName = mentions[0]?.displayName || userToMute
         const timestamp = new Date().toISOString()
-        console.log(`[${timestamp}] 🔨 Moderation: User ${userToBan} (${displayName}) banned from space ${spaceId} by ${userId}`)
+        console.log(`[${timestamp}] 🔇 Moderation: User ${userToMute} (${displayName}) muted in channel ${channelId} by ${userId}`)
         
         await handler.sendMessage(
             channelId,
-            `✅ Successfully banned <@${userToBan}> (${displayName}) from the space.`,
+            `🔇 Muted <@${userToMute}> (${displayName}) in this channel.\n` +
+            `Note: Actual muting functionality coming soon.`,
         )
-    } catch (error) {
-        const timestamp = new Date().toISOString()
-        console.error(`[${timestamp}] ❌ Ban error:`, error)
-        await handler.sendMessage(
+        })
+
+    /**
+     * /purge - Delete multiple messages (admin only)
+     */
+        bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args, replyId }) => {
+        // Check admin permission
+        const isAdmin = await handler.hasAdminPermission(userId, spaceId)
+        
+        if (!isAdmin) {
+            await handler.sendMessage(
+                channelId,
+                '❌ This command is admin-only. You don\'t have permission to purge messages.',
+            )
+            return
+        }
+
+        // Get number of messages to delete
+        if (!args[0]) {
+            await handler.sendMessage(
+                channelId,
+                '❌ Please specify how many messages to delete.\n' +
+                'Usage: `/purge 25` (between 1 and 100)',
+            )
+            return
+        }
+
+        const count = parseInt(args[0])
+        
+        if (isNaN(count) || count < 1 || count > 100) {
+            await handler.sendMessage(
+                channelId,
+                '❌ Please specify a valid number between 1 and 100.\n' +
+                'Usage: `/purge 25`',
+            )
+            return
+        }
+
+        // Check if bot has redaction permission (4 = Redact)
+        if (!bot) return // Safety check
+        
+        const canRedact = await handler.checkPermission(
             channelId,
-            `❌ Failed to ban user: ${error instanceof Error ? error.message : 'Unknown error'}\n` +
-            `Make sure the bot has ModifyBanning permission.`,
+            bot.botId,
+            4 // Permission.Redact
         )
-    }
-})
 
-/**
- * /mute - Mute a user in the channel (admin only)
- * Note: Actual muting functionality depends on Towns API capabilities
- */
-bot.onSlashCommand('mute', async (handler, { channelId, userId, spaceId, mentions, args }) => {
-    // Check admin permission
-    const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-    
-    if (!isAdmin) {
-        await handler.sendMessage(
-            channelId,
-            '❌ This command is admin-only. You don\'t have permission to mute users.',
-        )
-        return
-    }
-
-    // Get user to mute (from mentions or args)
-    const userToMute = mentions[0]?.userId || args[0]
-    
-    if (!userToMute) {
-        await handler.sendMessage(
-            channelId,
-            '❌ Please mention a user or provide a user ID.\n' +
-            'Usage: `/mute @user` or `/mute @user 10m`',
-        )
-        return
-    }
-
-    // TODO: Implement actual muting when Towns API supports it
-    // For now, just acknowledge the command
-    const displayName = mentions[0]?.displayName || userToMute
-    const timestamp = new Date().toISOString()
-    console.log(`[${timestamp}] 🔇 Moderation: User ${userToMute} (${displayName}) muted in channel ${channelId} by ${userId}`)
-    
-    await handler.sendMessage(
-        channelId,
-        `🔇 Muted <@${userToMute}> (${displayName}) in this channel.\n` +
-        `Note: Actual muting functionality coming soon.`,
-    )
-})
-
-/**
- * /purge - Delete multiple messages (admin only)
- */
-bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args, replyId }) => {
-    // Check admin permission
-    const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-    
-    if (!isAdmin) {
-        await handler.sendMessage(
-            channelId,
-            '❌ This command is admin-only. You don\'t have permission to purge messages.',
-        )
-        return
-    }
-
-    // Get number of messages to delete
-    if (!args[0]) {
-        await handler.sendMessage(
-            channelId,
-            '❌ Please specify how many messages to delete.\n' +
-            'Usage: `/purge 25` (between 1 and 100)',
-        )
-        return
-    }
-
-    const count = parseInt(args[0])
-    
-    if (isNaN(count) || count < 1 || count > 100) {
-        await handler.sendMessage(
-            channelId,
-            '❌ Please specify a valid number between 1 and 100.\n' +
-            'Usage: `/purge 25`',
-        )
-        return
-    }
-
-    // Check if bot has redaction permission (4 = Redact)
-    const canRedact = await handler.checkPermission(
-        channelId,
-        bot.botId,
-        4 // Permission.Redact
-    )
-
-    if (!canRedact) {
-        await handler.sendMessage(
-            channelId,
-            '❌ Bot does not have permission to delete messages. (Requires Redact permission)',
-        )
-        return
-    }
+        if (!canRedact) {
+            await handler.sendMessage(
+                channelId,
+                '❌ Bot does not have permission to delete messages. (Requires Redact permission)',
+            )
+            return
+        }
 
         // TODO: Implement actual message purging
         // Note: Towns bot framework doesn't provide a direct way to fetch recent messages
