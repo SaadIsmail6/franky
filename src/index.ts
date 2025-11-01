@@ -704,7 +704,7 @@ app.get('/health', () => {
 })
 
 // Webhook handler - uses Hono middleware pattern correctly
-app.post('/webhook', async (c, next) => {
+app.post('/webhook', async (c) => {
     // If bot not ready yet, return 503
     if (!bot || !jwtMiddleware || !handler) {
         return c.json({ 
@@ -713,10 +713,25 @@ app.post('/webhook', async (c, next) => {
         }, 503)
     }
     
-    // Bot is ready - use the middleware chain (handler will finalize the context)
-    await jwtMiddleware(c, async () => {
-        await handler(c)
-    })
+    // Bot is ready - call middleware chain and ensure response is returned
+    try {
+        await jwtMiddleware(c, async () => {
+            await handler(c)
+            // Handler should finalize context, but ensure we have a response
+            if (!c.finalized) {
+                return c.json({ ok: true })
+            }
+        })
+        
+        // Ensure response is returned
+        if (c.res) {
+            return c.res
+        }
+        return c.json({ ok: true })
+    } catch (error) {
+        console.error('Webhook error:', error)
+        return c.json({ error: 'Internal server error' }, 500)
+    }
 })
 
 // Initialize bot asynchronously (non-blocking)
