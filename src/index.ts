@@ -703,6 +703,22 @@ app.get('/health', () => {
     return Response.json({ ok: true, uptime })
 })
 
+// Webhook handler - uses Hono middleware pattern correctly
+app.post('/webhook', async (c, next) => {
+    // If bot not ready yet, return 503
+    if (!bot || !jwtMiddleware || !handler) {
+        return c.json({ 
+            error: 'Bot not initialized',
+            message: 'Bot is still initializing. Please try again in a moment.'
+        }, 503)
+    }
+    
+    // Bot is ready - use the middleware chain (handler will finalize the context)
+    await jwtMiddleware(c, async () => {
+        await handler(c)
+    })
+})
+
 // Initialize bot asynchronously (non-blocking)
 makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
     commands,
@@ -725,22 +741,6 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
         }
         console.warn('⚠️ Server will continue but bot will not respond')
     })
-
-// Towns webhook endpoint - simple handler
-app.post('/webhook', async (c) => {
-    // If bot not ready yet, return 503
-    if (!bot || !jwtMiddleware || !handler) {
-        return c.json({ 
-            error: 'Bot not initialized',
-            message: 'Bot is still initializing. Please try again in a moment.'
-        }, 503)
-    }
-    
-    // Use the JWT middleware and handler
-    return jwtMiddleware(c, async () => {
-        return handler(c)
-    })
-})
 
 // Reject all non-POST requests to /webhook
 app.all('/webhook', (c) => {
