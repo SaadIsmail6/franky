@@ -673,18 +673,34 @@ const { jwtMiddleware, handler } = bot.start()
  */
 const app = new Hono()
 app.use(logger())
+
+// Health check endpoint
+app.get('/', () => {
+    return new Response('Franky is running ✅', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+    })
+})
+
+// Health check JSON endpoint
+app.get('/health', () => {
+    return Response.json({ ok: true })
+})
+
+// Towns webhook endpoint
 app.post('/webhook', jwtMiddleware, handler)
 
 /**
  * Start the server with Bun
  */
-const port = process.env.PORT ? parseInt(process.env.PORT) : 5123
+const port = Number(process.env.PORT || 3000)
 
 Bun.serve({
+    hostname: '0.0.0.0',
     port,
     fetch: app.fetch,
 })
 
-console.log(`Server started on port ${port}`)
+console.log(`Listening on :${port}`)
 
 export default app
