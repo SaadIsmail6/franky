@@ -343,21 +343,29 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
     })
 
 // ============================================================================
-// ENVIRONMENT VALIDATION
+// ENVIRONMENT VALIDATION - Exit if missing required vars
 // ============================================================================
 
 if (!process.env.APP_PRIVATE_DATA || !process.env.JWT_SECRET) {
-    console.error('❌ Missing APP_PRIVATE_DATA or JWT_SECRET')
+    console.error('❌ FATAL: Missing required environment variables')
+    console.error('Required: APP_PRIVATE_DATA, JWT_SECRET')
     console.error('Please set these environment variables before starting the bot.')
+    process.exit(1)
 }
 
 // ============================================================================
 // SERVER - Bun.serve with bulletproof webhook handler
 // ============================================================================
 
-const port = Number(process.env.PORT || 3000)
+// Guard against double initialization
+if (globalThis.__FRANKY_SERVER_STARTED) {
+    console.warn('⚠️ Server already initialized, skipping')
+} else {
+    globalThis.__FRANKY_SERVER_STARTED = true
+    
+    const port = Number(process.env.PORT || 3000)
 
-Bun.serve({
+    Bun.serve({
     hostname: '0.0.0.0',
     port,
     fetch: async (req: Request) => {
@@ -375,7 +383,8 @@ Bun.serve({
 
         // GET /health
         if (method === 'GET' && path === '/health') {
-            return new Response(JSON.stringify({ ok: true, ts: new Date().toISOString() }), {
+            const uptime = Math.floor((Date.now() - startTime) / 1000)
+            return new Response(JSON.stringify({ ok: true, uptime, ts: new Date().toISOString() }), {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' },
             })
@@ -399,7 +408,7 @@ Bun.serve({
                 })
             }
 
-            // Bulletproof webhook handler - always return 200 OK unless fatal error
+            // Bulletproof webhook handler - return SDK response, ensure 200 OK
             try {
                 // Hand off directly to SDK handler - DO NOT pre-read or parse body
                 const res = await webhookHandler(req)
@@ -410,14 +419,17 @@ Bun.serve({
                     return new Response('OK', { status: 200 })
                 }
                 
-                // Always return 200 OK for Towns (even if SDK returns something else)
-                // Log what SDK returned for debugging, but convert to 200
-                const sdkStatus = res.status || 200
-                if (sdkStatus !== 200) {
-                    console.warn(`[WEBHOOK] SDK returned ${sdkStatus}, converting to 200`)
+                // Check SDK response status
+                const status = res.status || 200
+                console.log(`[WEBHOOK] ${status}`)
+                
+                // Towns requires HTTP 200 OK - return SDK response if 200, otherwise normalize to 200
+                if (status === 200) {
+                    return res
                 }
                 
-                console.log('[WEBHOOK] 200')
+                // SDK returned non-200 - log warning and return 200 OK (Towns requirement)
+                console.warn(`[WEBHOOK] Warning: SDK returned ${status}, normalizing to 200 OK`)
                 return new Response('OK', { status: 200 })
             } catch (error) {
                 // Fatal error - log with stack trace and return 500
@@ -433,8 +445,9 @@ Bun.serve({
         // 404 for all other routes
         return new Response('Not found', { status: 404 })
     },
-})
+    })
 
-console.log(`Listening on :${port}`)
+    console.log(`Listening on :${port}`)
+}
 
 export {}
