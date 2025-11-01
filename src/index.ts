@@ -138,8 +138,8 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         // Check if Franky is mentioned (case-insensitive)
         const lowerMessage = message.toLowerCase()
         if (mentionsFranky(message, isMentioned)) {
-            // Handle greeting patterns
-            if (lowerMessage.includes('hi franky') || lowerMessage.includes('hello franky')) {
+            // Handle greeting patterns (responds to "@franky hello", "hi franky", etc.)
+            if (lowerMessage.includes('hi') || lowerMessage.includes('hello')) {
                 await handler.sendMessage(channelId, 'Hi there 👋')
                 return
             }
