@@ -331,28 +331,16 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 }
 
 // ============================================================================
-// WEBHOOK HANDLER (Must be registered BEFORE bot init completes)
+// WEBHOOK HANDLER (Temporary until bot is ready)
 // ============================================================================
 
-// Webhook endpoint - handles bot initialization state
+// Temporary webhook handler (returns 503 until bot ready)
 app.post('/webhook', async (c) => {
-    // If bot not ready, return 503
     if (!bot || !jwtMiddleware || !handler) {
         return c.json({ error: 'Bot initializing' }, 503)
     }
-    
-    // Bot ready - use middleware chain (handler sets response to 200 automatically)
-    try {
-        await jwtMiddleware(c, async () => {
-            await handler(c)
-        })
-        // Return the response (should be 200 if handler finalized context)
-        // If not finalized, return 200 explicitly
-        return c.res || new Response(null, { status: 200 })
-    } catch (error) {
-        console.error('Webhook error:', error)
-        return c.json({ error: 'Internal server error' }, 500)
-    }
+    // Should not reach here once bot registers its own route
+    return c.json({ error: 'Webhook not configured' }, 500)
 })
 
 // Reject non-POST
@@ -373,6 +361,11 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
         jwtMiddleware = webhook.jwtMiddleware
         handler = webhook.handler
         setupBotHandlers(bot)
+        
+        // Register webhook route AFTER bot is ready using exact AGENTS.md pattern
+        // This replaces the temporary handler above
+        app.post('/webhook', jwtMiddleware, handler)
+        
         console.log('✅ Bot initialized successfully')
     })
     .catch((error) => {
