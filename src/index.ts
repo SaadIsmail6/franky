@@ -1,12 +1,10 @@
 import { makeTownsBot } from '@towns-protocol/bot'
-import { Hono } from 'hono'
-import { logger } from 'hono/logger'
 import commands from './commands'
 import { getAiringInfo, getRecommendations } from './anilist'
 
 /**
  * Franky - Towns Protocol Bot for Anime Communities
- * Complete rewrite - all errors fixed
+ * Webhook handler hands off directly to SDK without preprocessing
  */
 
 // ============================================================================
@@ -102,36 +100,24 @@ const ANIME_QUOTES = [
 ]
 
 // ============================================================================
-// BOT INITIALIZATION
+// BOT STATE
 // ============================================================================
 
-const app = new Hono()
-app.use(logger())
-
-const startTime = Date.now()
-
-// Health endpoints
-app.get('/', () => new Response('Franky is running ✅', { status: 200 }))
-app.get('/health', () => Response.json({ ok: true, uptime: Math.floor((Date.now() - startTime) / 1000) }))
-
-// Bot state
 let bot: Awaited<ReturnType<typeof makeTownsBot>> | null = null
-let jwtMiddleware: any = null
-let handler: any = null
+let webhookHandler: ((req: Request) => Promise<Response>) | null = null
+const startTime = Date.now()
 
 // ============================================================================
 // BOT HANDLERS SETUP
 // ============================================================================
 
 function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
-    // Channel join
     bot.onChannelJoin(async (_, { channelId }) => {
         console.log(`Franky joined channel: ${channelId}`)
     })
 
-    // Message handler
     bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned }) => {
-        if (userId === bot.botId) return
+        if (userId === bot!.botId) return
 
         // Trivia check
         const game = activeTriviaGames.get(channelId)
@@ -172,7 +158,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             const isAdmin = await handler.hasAdminPermission(userId, spaceId)
             if (isAdmin) return
 
-            const canRedact = await handler.checkPermission(channelId, bot.botId, 4) // Redact
+            const canRedact = await handler.checkPermission(channelId, bot!.botId, 4) // Redact = 4
             if (canRedact) {
                 await handler.adminRemoveEvent(channelId, eventId)
                 console.log(`[${new Date().toISOString()}] 🛡️ Deleted scam/spam from ${userId}`)
@@ -331,44 +317,14 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 }
 
 // ============================================================================
-// WEBHOOK HANDLER
-// ============================================================================
-
-// Single webhook route that delegates to bot middleware when ready
-app.post('/webhook', async (c) => {
-    // If bot not ready, return 503
-    if (!bot || !jwtMiddleware || !handler) {
-        return c.json({ error: 'Bot initializing' }, 503)
-    }
-    
-    // Bot ready - call middleware chain
-    // Handler will finalize context and set response to 200
-    await jwtMiddleware(c, async () => {
-        await handler(c)
-    })
-    
-    // Return the response that handler set (should be 200)
-    // Handler middleware should have finalized context
-    return c.res || new Response(null, { status: 200 })
-})
-
-// Reject non-POST
-app.all('/webhook', (c) => {
-    if (c.req.method !== 'POST') {
-        return c.json({ error: 'Method not allowed' }, 405)
-    }
-})
-
-// ============================================================================
-// BOT INITIALIZATION (Non-blocking, suppresses ConnectError)
+// BOT INITIALIZATION
 // ============================================================================
 
 makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands })
     .then((initializedBot) => {
         bot = initializedBot
         const webhook = bot.start()
-        jwtMiddleware = webhook.jwtMiddleware
-        handler = webhook.handler
+        webhookHandler = webhook.handler
         setupBotHandlers(bot)
         console.log('✅ Bot initialized successfully')
     })
@@ -387,18 +343,81 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
     })
 
 // ============================================================================
-// SERVER STARTUP
+// SERVER - Bun.serve with direct fetch handler
 // ============================================================================
 
-if (!globalThis.__FRANKY_SERVER_STARTED) {
-    globalThis.__FRANKY_SERVER_STARTED = true
-    const port = Number(process.env.PORT || 3000)
-    Bun.serve({
-        hostname: '0.0.0.0',
-        port,
-        fetch: app.fetch,
-    })
-    console.log(`Listening on :${port}`)
-}
+const port = Number(process.env.PORT || 3000)
+
+Bun.serve({
+    hostname: '0.0.0.0',
+    port,
+    fetch: async (req: Request) => {
+        const url = new URL(req.url)
+        const path = url.pathname
+        const method = req.method
+
+        // GET /
+        if (method === 'GET' && path === '/') {
+            return new Response('Franky is running ✅', { status: 200 })
+        }
+
+        // GET /health
+        if (method === 'GET' && path === '/health') {
+            return Response.json({ ok: true })
+        }
+
+        // POST /webhook - hand off directly to SDK handler
+        if (method === 'POST' && path === '/webhook') {
+            console.log(`[${new Date().toISOString()}] 📨 POST /webhook received`)
+            
+            // Check if bot is ready
+            if (!bot || !webhookHandler) {
+                console.log('⚠️ Bot not ready, returning 503')
+                return new Response(JSON.stringify({ error: 'Bot initializing' }), {
+                    status: 503,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            // Hand off directly to SDK handler - DO NOT pre-read or parse body
+            try {
+                const response = await webhookHandler(req)
+                console.log(`✅ Webhook processed, status: ${response.status}`)
+                return response
+            } catch (error) {
+                // Check for JWT verification failures
+                if (error instanceof Error) {
+                    const errorMessage = error.message.toLowerCase()
+                    if (errorMessage.includes('jwt') || 
+                        errorMessage.includes('secret') || 
+                        errorMessage.includes('verification') ||
+                        errorMessage.includes('signature')) {
+                        console.error('❌ JWT verification failed - check JWT_SECRET:', error.message)
+                        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+                            status: 401,
+                            headers: { 'Content-Type': 'application/json' },
+                        })
+                    }
+                }
+                
+                // Any other error - log stack and return 500
+                console.error('❌ Webhook processing error:')
+                console.error(error)
+                if (error instanceof Error && error.stack) {
+                    console.error('Stack trace:', error.stack)
+                }
+                return new Response(JSON.stringify({ error: 'Internal server error' }), {
+                    status: 500,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+        }
+
+        // 404 for all other routes
+        return new Response('Not found', { status: 404 })
+    },
+})
+
+console.log(`Listening on :${port}`)
 
 export {}
