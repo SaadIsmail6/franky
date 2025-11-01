@@ -1,5 +1,4 @@
 import { makeTownsBot } from '@towns-protocol/bot'
-import { Permission } from '@towns-protocol/sdk'
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
 import commands from './commands'
@@ -179,11 +178,11 @@ bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, is
             return
         }
 
-        // Check if bot has redaction permission
+        // Check if bot has redaction permission (4 = Redact)
         const canRedact = await handler.checkPermission(
             channelId,
             bot.botId,
-            Permission.Redact
+            4 // Permission.Redact
         )
 
         if (canRedact) {
@@ -636,11 +635,11 @@ bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args, 
         return
     }
 
-    // Check if bot has redaction permission
+    // Check if bot has redaction permission (4 = Redact)
     const canRedact = await handler.checkPermission(
         channelId,
         bot.botId,
-        Permission.Redact
+        4 // Permission.Redact
     )
 
     if (!canRedact) {
@@ -675,5 +674,17 @@ const { jwtMiddleware, handler } = bot.start()
 const app = new Hono()
 app.use(logger())
 app.post('/webhook', jwtMiddleware, handler)
+
+/**
+ * Start the server with Bun
+ */
+const port = process.env.PORT ? parseInt(process.env.PORT) : 5123
+
+Bun.serve({
+    port,
+    fetch: app.fetch,
+})
+
+console.log(`Server started on port ${port}`)
 
 export default app
