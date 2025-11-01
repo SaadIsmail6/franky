@@ -35,18 +35,40 @@ function formatETA(seconds: number): string {
 }
 
 // Initialize the bot with credentials from environment variables
-const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
-    commands,
-})
+let bot: Awaited<ReturnType<typeof makeTownsBot>> | null = null
+let jwtMiddleware: any = null
+let handler: any = null
+
+try {
+    bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
+        commands,
+    })
+    
+    // Get webhook handler
+    const webhook = bot.start()
+    jwtMiddleware = webhook.jwtMiddleware
+    handler = webhook.handler
+    
+    console.log('✅ Bot initialized successfully')
+} catch (error) {
+    console.error('⚠️ Bot initialization error:', error)
+    if (error instanceof Error) {
+        console.error('Error message:', error.message)
+        console.error('Stack trace:', error.stack)
+    }
+    console.warn('⚠️ Server will start but webhook endpoint will not work until bot is configured correctly')
+}
 
 /**
  * Set bot name when joining channels
  */
-bot.onChannelJoin(async (handler, { channelId }) => {
-    // Note: Bot name/display name setting would happen here if API supports it
-    // Currently Towns bots derive their identity from the app credentials
-    console.log(`Franky joined channel: ${channelId}`)
-})
+if (bot) {
+    bot.onChannelJoin(async (handler, { channelId }) => {
+        // Note: Bot name/display name setting would happen here if API supports it
+        // Currently Towns bots derive their identity from the app credentials
+        console.log(`Franky joined channel: ${channelId}`)
+    })
+}
 
 /**
  * Scam/Spam detection keywords and patterns
@@ -111,11 +133,12 @@ function mentionsFranky(message: string, isMentioned: boolean): boolean {
  * Moderation: Auto-delete scam/spam messages
  * Also handles trivia game answers and Franky mentions
  */
-bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned }) => {
-    // Skip checking bot's own messages
-    if (userId === bot.botId) {
-        return
-    }
+if (bot) {
+    bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned }) => {
+        // Skip checking bot's own messages
+        if (!bot || userId === bot.botId) {
+            return
+        }
 
     // Check for active trivia game in this channel
     const triviaGame = activeTriviaGames.get(channelId)
@@ -179,6 +202,8 @@ bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, is
         }
 
         // Check if bot has redaction permission (4 = Redact)
+        if (!bot) return // Safety check
+        
         const canRedact = await handler.checkPermission(
             channelId,
             bot.botId,
@@ -202,31 +227,35 @@ bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, is
             const timestamp = new Date().toISOString()
             console.warn(`[${timestamp}] ⚠️ Cannot delete scam message - bot lacks Redact permission`)
         }
-    }
+    })
 })
 
 /**
- * /help - Show available commands
+ * Register all slash commands (only if bot initialized successfully)
  */
-bot.onSlashCommand('help', async (handler, { channelId }) => {
-    await handler.sendMessage(
-        channelId,
-        'Franky — Commands\n\n' +
-            '• /airing <title>\n' +
-            '• /recommend <vibe>\n' +
-            '• /quote\n' +
-            '• /guess-anime\n' +
-            '• /news\n' +
-            '• /calendar\n\n' +
-            'Moderation (admins):\n\n' +
-            '• /ban @user • /mute @user 10m • /purge 25',
-    )
-})
+if (bot) {
+    /**
+     * /help - Show available commands
+     */
+    bot.onSlashCommand('help', async (handler, { channelId }) => {
+        await handler.sendMessage(
+            channelId,
+            'Franky — Commands\n\n' +
+                '• /airing <title>\n' +
+                '• /recommend <vibe>\n' +
+                '• /quote\n' +
+                '• /guess-anime\n' +
+                '• /news\n' +
+                '• /calendar\n\n' +
+                'Moderation (admins):\n\n' +
+                '• /ban @user • /mute @user 10m • /purge 25',
+        )
+    })
 
-/**
- * /airing - Check currently airing anime
- */
-bot.onSlashCommand('airing', async (handler, { channelId, args }) => {
+    /**
+     * /airing - Check currently airing anime
+     */
+    bot.onSlashCommand('airing', async (handler, { channelId, args }) => {
     // Read anime title from args
     const title = args.join(' ').trim()
     
@@ -401,22 +430,26 @@ const ANIME_QUOTES = [
 ]
 
 /**
- * /quote - Get a random anime quote
+ * Register remaining slash commands (only if bot initialized successfully)
  */
-bot.onSlashCommand('quote', async (handler, { channelId }) => {
-    // Select a random quote
-    const randomQuote = ANIME_QUOTES[Math.floor(Math.random() * ANIME_QUOTES.length)]
-    
-    await handler.sendMessage(
-        channelId,
-        `💬 "${randomQuote.quote}" — ${randomQuote.character}`,
-    )
-})
+if (bot) {
+    /**
+     * /quote - Get a random anime quote
+     */
+    bot.onSlashCommand('quote', async (handler, { channelId }) => {
+        // Select a random quote
+        const randomQuote = ANIME_QUOTES[Math.floor(Math.random() * ANIME_QUOTES.length)]
+        
+        await handler.sendMessage(
+            channelId,
+            `💬 "${randomQuote.quote}" — ${randomQuote.character}`,
+        )
+    })
 
-/**
- * /guess-anime - Play guess the anime game (admin only)
- */
-bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId }) => {
+    /**
+     * /guess-anime - Play guess the anime game (admin only)
+     */
+    bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId }) => {
     // Check admin permission
     const isAdmin = await handler.hasAdminPermission(userId, spaceId)
     
@@ -456,7 +489,7 @@ bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId }
         activeTriviaGames.delete(channelId)
 
         // Only send timeout message if no one won
-        if (game && !game.hasWinner) {
+        if (game && !game.hasWinner && bot) {
             await bot.sendMessage(
                 channelId,
                 `⏰ Time's up! The answer was: **${randomQuestion.answer}**`,
@@ -464,45 +497,45 @@ bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId }
         }
     }, 60000) // 60 seconds
 
-    // Store the active game
-    activeTriviaGames.set(channelId, {
-        answer: randomQuestion.answer,
-        clue: randomQuestion.clue,
-        hasWinner: false,
-        timeoutId,
+        // Store the active game
+        activeTriviaGames.set(channelId, {
+            answer: randomQuestion.answer,
+            clue: randomQuestion.clue,
+            hasWinner: false,
+            timeoutId,
+        })
     })
-})
 
-/**
- * /news - Get the latest anime news
- * 
- * TODO: Hook up RSS feeds to fetch real-time anime news
- * TODO: Set up Sunday 7 AM cron job to post weekly news summary
- */
-bot.onSlashCommand('news', async (handler, { channelId }) => {
-    await handler.sendMessage(
-        channelId,
-        '📰 Anime news (coming soon).',
-    )
-})
+    /**
+     * /news - Get the latest anime news
+     * 
+     * TODO: Hook up RSS feeds to fetch real-time anime news
+     * TODO: Set up Sunday 7 AM cron job to post weekly news summary
+     */
+    bot.onSlashCommand('news', async (handler, { channelId }) => {
+        await handler.sendMessage(
+            channelId,
+            '📰 Anime news (coming soon).',
+        )
+    })
 
-/**
- * /calendar - View anime release calendar
- * 
- * TODO: Hook up RSS feeds to fetch anime airing schedules
- * TODO: Set up Sunday 7 AM cron job to post weekly airing calendar
- */
-bot.onSlashCommand('calendar', async (handler, { channelId }) => {
-    await handler.sendMessage(
-        channelId,
-        '🗓️ Weekly airing calendar (coming soon).',
-    )
-})
+    /**
+     * /calendar - View anime release calendar
+     * 
+     * TODO: Hook up RSS feeds to fetch anime airing schedules
+     * TODO: Set up Sunday 7 AM cron job to post weekly airing calendar
+     */
+    bot.onSlashCommand('calendar', async (handler, { channelId }) => {
+        await handler.sendMessage(
+            channelId,
+            '🗓️ Weekly airing calendar (coming soon).',
+        )
+    })
 
-/**
- * /ban - Ban a user from the space (admin only)
- */
-bot.onSlashCommand('ban', async (handler, { channelId, userId, spaceId, mentions, args }) => {
+    /**
+     * /ban - Ban a user from the space (admin only)
+     */
+    bot.onSlashCommand('ban', async (handler, { channelId, userId, spaceId, mentions, args }) => {
     // Check admin permission
     const isAdmin = await handler.hasAdminPermission(userId, spaceId)
     
@@ -650,23 +683,19 @@ bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args, 
         return
     }
 
-    // TODO: Implement actual message purging
-    // Note: Towns bot framework doesn't provide a direct way to fetch recent messages
-    // This would require implementing message history tracking or using a different approach
-    const timestamp = new Date().toISOString()
-    console.log(`[${timestamp}] 🗑️ Moderation: Purge command executed - attempting to delete ${count} messages in channel ${channelId} by ${userId}`)
-    
-    await handler.sendMessage(
-        channelId,
-        `🗑️ Purge command received. Deleting ${count} messages...\n` +
-        `Note: Message purging requires tracking message history. Implementation coming soon.`,
-    )
-})
-
-/**
- * Start the bot and create webhook handler
- */
-const { jwtMiddleware, handler } = bot.start()
+        // TODO: Implement actual message purging
+        // Note: Towns bot framework doesn't provide a direct way to fetch recent messages
+        // This would require implementing message history tracking or using a different approach
+        const timestamp = new Date().toISOString()
+        console.log(`[${timestamp}] 🗑️ Moderation: Purge command executed - attempting to delete ${count} messages in channel ${channelId} by ${userId}`)
+        
+        await handler.sendMessage(
+            channelId,
+            `🗑️ Purge command received. Deleting ${count} messages...\n` +
+            `Note: Message purging requires tracking message history. Implementation coming soon.`,
+        )
+    })
+}
 
 /**
  * Track server uptime
@@ -710,6 +739,13 @@ app.get('/health', () => {
 
 // Towns webhook endpoint - POST only with error handling
 app.post('/webhook', async (c, next) => {
+    if (!bot || !jwtMiddleware || !handler) {
+        return c.json({ 
+            error: 'Bot not initialized',
+            message: 'Bot initialization failed. Check server logs and verify APP_PRIVATE_DATA and JWT_SECRET are valid.'
+        }, 503)
+    }
+
     try {
         await jwtMiddleware(c, async () => {
             await handler(c)
