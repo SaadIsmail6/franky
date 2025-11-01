@@ -703,8 +703,8 @@ app.get('/health', () => {
     return Response.json({ ok: true, uptime })
 })
 
-// Webhook handler - uses Hono middleware pattern correctly
-app.post('/webhook', async (c) => {
+// Webhook handler - delegates to bot middleware when ready
+app.post('/webhook', async (c, next) => {
     // If bot not ready yet, return 503
     if (!bot || !jwtMiddleware || !handler) {
         return c.json({ 
@@ -713,25 +713,10 @@ app.post('/webhook', async (c) => {
         }, 503)
     }
     
-    // Bot is ready - call middleware chain and ensure response is returned
-    try {
-        await jwtMiddleware(c, async () => {
-            await handler(c)
-            // Handler should finalize context, but ensure we have a response
-            if (!c.finalized) {
-                return c.json({ ok: true })
-            }
-        })
-        
-        // Ensure response is returned
-        if (c.res) {
-            return c.res
-        }
-        return c.json({ ok: true })
-    } catch (error) {
-        console.error('Webhook error:', error)
-        return c.json({ error: 'Internal server error' }, 500)
-    }
+    // Bot is ready - delegate to JWT middleware and handler (proper Hono pattern)
+    return jwtMiddleware(c, async () => {
+        return handler(c)
+    })
 })
 
 // Initialize bot asynchronously (non-blocking)
@@ -750,11 +735,22 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
         console.log('✅ Bot initialized successfully')
     })
     .catch((error) => {
-        console.error('⚠️ Bot initialization error:', error)
-        if (error instanceof Error) {
-            console.error('Error message:', error.message)
+        // Suppress ConnectError - it's non-fatal and bot can still work
+        const isConnectError = error instanceof Error && 
+            (error.message.includes('Connect') || 
+             error.constructor?.name === 'ConnectError' ||
+             error.stack?.includes('connect-error'))
+        
+        if (isConnectError) {
+            // ConnectError is non-fatal - bot can still initialize later
+            console.warn('⚠️ Connection warning during initialization (non-fatal)')
+        } else {
+            console.error('⚠️ Bot initialization error:', error)
+            if (error instanceof Error) {
+                console.error('Error message:', error.message)
+            }
         }
-        console.warn('⚠️ Server will continue but bot will not respond')
+        console.warn('⚠️ Server will continue but bot will not respond until initialized')
     })
 
 // Reject all non-POST requests to /webhook
