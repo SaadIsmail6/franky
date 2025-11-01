@@ -227,8 +227,9 @@ if (bot) {
             const timestamp = new Date().toISOString()
             console.warn(`[${timestamp}] ⚠️ Cannot delete scam message - bot lacks Redact permission`)
         }
+    }
     })
-})
+}
 
 /**
  * Register all slash commands (only if bot initialized successfully)
