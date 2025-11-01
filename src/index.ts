@@ -140,94 +140,94 @@ if (bot) {
             return
         }
 
-    // Check for active trivia game in this channel
-    const triviaGame = activeTriviaGames.get(channelId)
-    if (triviaGame && !triviaGame.hasWinner) {
-        // Check if message contains the correct answer
-        if (checkTriviaAnswer(message, triviaGame.answer)) {
-            // Mark as won and clean up
-            triviaGame.hasWinner = true
-            clearTimeout(triviaGame.timeoutId)
-            activeTriviaGames.delete(channelId)
+        // Check for active trivia game in this channel
+        const triviaGame = activeTriviaGames.get(channelId)
+        if (triviaGame && !triviaGame.hasWinner) {
+            // Check if message contains the correct answer
+            if (checkTriviaAnswer(message, triviaGame.answer)) {
+                // Mark as won and clean up
+                triviaGame.hasWinner = true
+                clearTimeout(triviaGame.timeoutId)
+                activeTriviaGames.delete(channelId)
 
-            // Announce winner
-            await handler.sendMessage(
-                channelId,
-                `✅ Correct, <@${userId}>! Answer: ${triviaGame.answer}`,
-                {
-                    mentions: [{ userId, displayName: 'Winner' }],
-                },
-            )
-            return // Don't process moderation for winning messages
-        }
-    }
-
-    // Check if Franky is mentioned (case-insensitive)
-    const lowerMessage = message.toLowerCase()
-    if (mentionsFranky(message, isMentioned)) {
-        // Handle greeting patterns
-        if (lowerMessage.includes('hi franky') || lowerMessage.includes('hello franky')) {
-            await handler.sendMessage(channelId, 'Hi there 👋')
-            return
+                // Announce winner
+                await handler.sendMessage(
+                    channelId,
+                    `✅ Correct, <@${userId}>! Answer: ${triviaGame.answer}`,
+                    {
+                        mentions: [{ userId, displayName: 'Winner' }],
+                    },
+                )
+                return // Don't process moderation for winning messages
+            }
         }
 
-        // Handle introduction question
-        if (lowerMessage.includes('who are you franky')) {
-            await handler.sendMessage(
-                channelId,
-                "I'm Franky, the super cyborg of AnimeTown!🌸",
-            )
-            return
+        // Check if Franky is mentioned (case-insensitive)
+        const lowerMessage = message.toLowerCase()
+        if (mentionsFranky(message, isMentioned)) {
+            // Handle greeting patterns
+            if (lowerMessage.includes('hi franky') || lowerMessage.includes('hello franky')) {
+                await handler.sendMessage(channelId, 'Hi there 👋')
+                return
+            }
+
+            // Handle introduction question
+            if (lowerMessage.includes('who are you franky')) {
+                await handler.sendMessage(
+                    channelId,
+                    "I'm Franky, the super cyborg of AnimeTown!🌸",
+                )
+                return
+            }
+
+            // Handle goodbye patterns
+            if (lowerMessage.includes('bye franky')) {
+                await handler.sendMessage(channelId, 'See ya later!')
+                return
+            }
+
+            // Handle thank you patterns
+            if (lowerMessage.includes('thanks franky') || lowerMessage.includes('thank you franky')) {
+                await handler.sendMessage(channelId, 'Anytime, nakama! 🙌')
+                return
+            }
         }
 
-        // Handle goodbye patterns
-        if (lowerMessage.includes('bye franky')) {
-            await handler.sendMessage(channelId, 'See ya later!')
-            return
-        }
+        // Check for scam/spam content
+        if (isScamOrSpam(message)) {
+            // Ignore messages from admins
+            const isAdmin = await handler.hasAdminPermission(userId, spaceId)
+            if (isAdmin) {
+                return
+            }
 
-        // Handle thank you patterns
-        if (lowerMessage.includes('thanks franky') || lowerMessage.includes('thank you franky')) {
-            await handler.sendMessage(channelId, 'Anytime, nakama! 🙌')
-            return
-        }
-    }
-
-    // Check for scam/spam content
-    if (isScamOrSpam(message)) {
-        // Ignore messages from admins
-        const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-        if (isAdmin) {
-            return
-        }
-
-        // Check if bot has redaction permission (4 = Redact)
-        if (!bot) return // Safety check
-        
-        const canRedact = await handler.checkPermission(
-            channelId,
-            bot.botId,
-            4 // Permission.Redact
-        )
-
-        if (canRedact) {
-            // Delete the scam/spam message
-            await handler.adminRemoveEvent(channelId, eventId)
+            // Check if bot has redaction permission (4 = Redact)
+            if (!bot) return // Safety check
             
-            // Log moderation action with timestamp
-            const timestamp = new Date().toISOString()
-            console.log(`[${timestamp}] 🛡️ Moderation: Deleted scam/spam message from ${userId} in channel ${channelId}`)
-            
-            // Optionally send a warning (be careful not to spam)
-            // await handler.sendMessage(
-            //     channelId,
-            //     `⚠️ Removed suspicious message from <@${userId}>`
-            // )
-        } else {
-            const timestamp = new Date().toISOString()
-            console.warn(`[${timestamp}] ⚠️ Cannot delete scam message - bot lacks Redact permission`)
+            const canRedact = await handler.checkPermission(
+                channelId,
+                bot.botId,
+                4 // Permission.Redact
+            )
+
+            if (canRedact) {
+                // Delete the scam/spam message
+                await handler.adminRemoveEvent(channelId, eventId)
+                
+                // Log moderation action with timestamp
+                const timestamp = new Date().toISOString()
+                console.log(`[${timestamp}] 🛡️ Moderation: Deleted scam/spam message from ${userId} in channel ${channelId}`)
+                
+                // Optionally send a warning (be careful not to spam)
+                // await handler.sendMessage(
+                //     channelId,
+                //     `⚠️ Removed suspicious message from <@${userId}>`
+                // )
+            } else {
+                const timestamp = new Date().toISOString()
+                console.warn(`[${timestamp}] ⚠️ Cannot delete scam message - bot lacks Redact permission`)
+            }
         }
-    }
     })
 }
 
