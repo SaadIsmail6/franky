@@ -34,45 +34,16 @@ function formatETA(seconds: number): string {
     return 'soon'
 }
 
-// Initialize the bot with credentials from environment variables
+// Bot will be initialized after server setup
 let bot: Awaited<ReturnType<typeof makeTownsBot>> | null = null
 let jwtMiddleware: any = null
 let handler: any = null
 
-try {
-    bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
-        commands,
-    })
-    
-    // Get webhook handler
-    const webhook = bot.start()
-    jwtMiddleware = webhook.jwtMiddleware
-    handler = webhook.handler
-    
-    console.log('✅ Bot initialized successfully')
-} catch (error) {
-    console.error('⚠️ Bot initialization error:', error)
-    if (error instanceof Error) {
-        console.error('Error message:', error.message)
-        console.error('Stack trace:', error.stack)
-    }
-    console.warn('⚠️ Server will start but webhook endpoint will not work until bot is configured correctly')
-}
-
 /**
- * Set bot name when joining channels
+ * Setup all bot event handlers
+ * Called after bot initialization
  */
-if (bot) {
-    bot.onChannelJoin(async (handler, { channelId }) => {
-        // Note: Bot name/display name setting would happen here if API supports it
-        // Currently Towns bots derive their identity from the app credentials
-        console.log(`Franky joined channel: ${channelId}`)
-    })
-}
-
-/**
- * Scam/Spam detection keywords and patterns
- */
+// Scam/Spam detection keywords and patterns
 const SCAM_KEYWORDS = [
     // Discord Nitro scams
     'free nitro',
@@ -129,11 +100,13 @@ function mentionsFranky(message: string, isMentioned: boolean): boolean {
     return isMentioned || lowerMessage.includes('franky')
 }
 
-/**
- * Moderation: Auto-delete scam/spam messages
- * Also handles trivia game answers and Franky mentions
- */
-if (bot) {
+function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
+    // Channel join handler
+    bot.onChannelJoin(async (handler, { channelId }) => {
+        console.log(`Franky joined channel: ${channelId}`)
+    })
+
+    // Message handler: Moderation, trivia, and mentions
     bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned }) => {
         // Skip checking bot's own messages
         if (!bot || userId === bot.botId) {
@@ -310,9 +283,7 @@ if (bot) {
         }
     })
 
-    /**
-     * /recommend - Get anime recommendations
-     */
+    // Slash command: /recommend
     bot.onSlashCommand('recommend', async (handler, { channelId, args }) => {
         // Get vibe from args, default to "action"
         const vibe = args.join(' ').trim() || 'action'
@@ -354,7 +325,8 @@ if (bot) {
             console.error('AniList API error:', error)
         }
     })
-}
+
+    // Slash command: /quote
 
 /**
  * Trivia game storage: tracks active games per channel
@@ -431,13 +403,6 @@ const ANIME_QUOTES = [
     { quote: 'There\'s nothing wrong with letting people who love you help you.', character: 'Uncle Iroh' },
 ]
 
-/**
- * Register remaining slash commands (only if bot initialized successfully)
- */
-if (bot) {
-    /**
-     * /quote - Get a random anime quote
-     */
     bot.onSlashCommand('quote', async (handler, { channelId }) => {
         // Select a random quote
         const randomQuote = ANIME_QUOTES[Math.floor(Math.random() * ANIME_QUOTES.length)]
@@ -593,11 +558,8 @@ if (bot) {
         }
     })
 
-    /**
-     * /mute - Mute a user in the channel (admin only)
-     * Note: Actual muting functionality depends on Towns API capabilities
-     */
-        bot.onSlashCommand('mute', async (handler, { channelId, userId, spaceId, mentions, args }) => {
+    // Slash command: /mute
+    bot.onSlashCommand('mute', async (handler, { channelId, userId, spaceId, mentions, args }) => {
         // Check admin permission
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         
@@ -741,28 +703,46 @@ app.get('/health', () => {
     return Response.json({ ok: true, uptime })
 })
 
-// Towns webhook endpoint - POST only with error handling
-// Use Hono's middleware pattern: app.post(path, middleware1, middleware2, handler)
-if (bot && jwtMiddleware && handler) {
-    // Add logging middleware before JWT middleware
-    app.use('/webhook', async (c, next) => {
-        console.log(`📨 Webhook received: ${new Date().toISOString()}`)
-        await next()
+// Initialize bot asynchronously (non-blocking)
+makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
+    commands,
+})
+    .then((initializedBot) => {
+        bot = initializedBot
+        const webhook = bot.start()
+        jwtMiddleware = webhook.jwtMiddleware
+        handler = webhook.handler
+        
+        // Setup all event handlers
+        setupBotHandlers(bot)
+        
+        console.log('✅ Bot initialized successfully')
     })
-    
-    app.post('/webhook', jwtMiddleware, handler)
-} else {
-    // If bot not initialized, return 503
-    app.post('/webhook', async (c) => {
-        console.error('⚠️ Webhook called but bot not initialized')
+    .catch((error) => {
+        console.error('⚠️ Bot initialization error:', error)
+        if (error instanceof Error) {
+            console.error('Error message:', error.message)
+        }
+        console.warn('⚠️ Server will continue but bot will not respond')
+    })
+
+// Towns webhook endpoint - simple handler
+app.post('/webhook', async (c) => {
+    // If bot not ready yet, return 503
+    if (!bot || !jwtMiddleware || !handler) {
         return c.json({ 
             error: 'Bot not initialized',
-            message: 'Bot initialization failed. Check server logs and verify APP_PRIVATE_DATA and JWT_SECRET are valid.'
+            message: 'Bot is still initializing. Please try again in a moment.'
         }, 503)
+    }
+    
+    // Use the JWT middleware and handler
+    return jwtMiddleware(c, async () => {
+        return handler(c)
     })
-}
+})
 
-// Reject all non-POST requests to /webhook (must come after POST route)
+// Reject all non-POST requests to /webhook
 app.all('/webhook', (c) => {
     if (c.req.method !== 'POST') {
         return c.json({ error: 'Method not allowed' }, 405)
