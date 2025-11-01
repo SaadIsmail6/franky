@@ -257,103 +257,104 @@ if (bot) {
      * /airing - Check currently airing anime
      */
     bot.onSlashCommand('airing', async (handler, { channelId, args }) => {
-    // Read anime title from args
-    const title = args.join(' ').trim()
-    
-    if (!title) {
-        await handler.sendMessage(
-            channelId,
-            'Usage: `/airing <anime title>`\n' +
-            'Example: `/airing One Piece`',
-        )
-        return
-    }
-
-    try {
-        // Call AniList API
-        const airingInfo = await getAiringInfo(title)
-
-        // Handle not found case
-        if (!airingInfo) {
+        // Read anime title from args
+        const title = args.join(' ').trim()
+        
+        if (!title) {
             await handler.sendMessage(
                 channelId,
-                'Not found. Try a different title.',
+                'Usage: `/airing <anime title>`\n' +
+                'Example: `/airing One Piece`',
             )
             return
         }
 
-        // Format response based on whether next episode info exists
-        if (airingInfo.nextEpisode !== null && airingInfo.timeUntilSeconds !== null) {
-            const eta = formatETA(airingInfo.timeUntilSeconds)
-            
+        try {
+            // Call AniList API
+            const airingInfo = await getAiringInfo(title)
+
+            // Handle not found case
+            if (!airingInfo) {
+                await handler.sendMessage(
+                    channelId,
+                    'Not found. Try a different title.',
+                )
+                return
+            }
+
+            // Format response based on whether next episode info exists
+            if (airingInfo.nextEpisode !== null && airingInfo.timeUntilSeconds !== null) {
+                const eta = formatETA(airingInfo.timeUntilSeconds)
+                
+                await handler.sendMessage(
+                    channelId,
+                    `📺 ${airingInfo.title}\n` +
+                    `Next ep: ~${eta} | #${airingInfo.nextEpisode}\n` +
+                    airingInfo.siteUrl,
+                )
+            } else {
+                await handler.sendMessage(
+                    channelId,
+                    `📺 ${airingInfo.title}\n` +
+                    `No upcoming episode info.\n` +
+                    airingInfo.siteUrl,
+                )
+            }
+        } catch (error) {
+            // Handle API errors
             await handler.sendMessage(
                 channelId,
-                `📺 ${airingInfo.title}\n` +
-                `Next ep: ~${eta} | #${airingInfo.nextEpisode}\n` +
-                airingInfo.siteUrl,
+                'AniList is not responding right now. Please try again later.',
             )
-        } else {
-            await handler.sendMessage(
-                channelId,
-                `📺 ${airingInfo.title}\n` +
-                `No upcoming episode info.\n` +
-                airingInfo.siteUrl,
-            )
+            console.error('AniList API error:', error)
         }
-    } catch (error) {
-        // Handle API errors
-        await handler.sendMessage(
-            channelId,
-            'AniList is not responding right now. Please try again later.',
-        )
-        console.error('AniList API error:', error)
-    }
-})
+    })
 
-/**
- * /recommend - Get anime recommendations
- */
-bot.onSlashCommand('recommend', async (handler, { channelId, args }) => {
-    // Get vibe from args, default to "action"
-    const vibe = args.join(' ').trim() || 'action'
+    /**
+     * /recommend - Get anime recommendations
+     */
+    bot.onSlashCommand('recommend', async (handler, { channelId, args }) => {
+        // Get vibe from args, default to "action"
+        const vibe = args.join(' ').trim() || 'action'
 
-    try {
-        // Get recommendations from AniList
-        const recommendations = await getRecommendations(vibe)
+        try {
+            // Get recommendations from AniList
+            const recommendations = await getRecommendations(vibe)
 
-        // Handle empty results
-        if (recommendations.length === 0) {
+            // Handle empty results
+            if (recommendations.length === 0) {
+                await handler.sendMessage(
+                    channelId,
+                    `No anime found for vibe "${vibe}". Try a different genre (e.g., action, romance, comedy).`,
+                )
+                return
+            }
+
+            // Format recommendations
+            let message = `🎯 Top ${recommendations.length} "${vibe}" anime\n\n`
+
+            recommendations.forEach((rec) => {
+                // Format episode count
+                const episodesText = rec.episodes !== null ? rec.episodes.toString() : '?'
+
+                // Format score (averageScore is 0-100)
+                const scoreText = rec.score !== null ? rec.score.toString() : '?'
+
+                message += `• ${rec.title} — eps: ${episodesText} — score: ${scoreText}\n`
+                message += `${rec.siteUrl}\n\n`
+            })
+
+            await handler.sendMessage(channelId, message.trim())
+        } catch (error) {
+            // Handle API errors
             await handler.sendMessage(
                 channelId,
-                `No anime found for vibe "${vibe}". Try a different genre (e.g., action, romance, comedy).`,
+                'AniList is not responding right now. Please try again later.',
             )
-            return
+            console.error('AniList API error:', error)
         }
-
-        // Format recommendations
-        let message = `🎯 Top ${recommendations.length} "${vibe}" anime\n\n`
-
-        recommendations.forEach((rec) => {
-            // Format episode count
-            const episodesText = rec.episodes !== null ? rec.episodes.toString() : '?'
-
-            // Format score (averageScore is 0-100)
-            const scoreText = rec.score !== null ? rec.score.toString() : '?'
-
-            message += `• ${rec.title} — eps: ${episodesText} — score: ${scoreText}\n`
-            message += `${rec.siteUrl}\n\n`
-        })
-
-        await handler.sendMessage(channelId, message.trim())
-    } catch (error) {
-        // Handle API errors
-        await handler.sendMessage(
-            channelId,
-            'AniList is not responding right now. Please try again later.',
-        )
-        console.error('AniList API error:', error)
-    }
-})
+    })
+}
 
 /**
  * Trivia game storage: tracks active games per channel
@@ -791,3 +792,5 @@ if (typeof globalThis.__FRANKY_SERVER_STARTED === 'undefined') {
 }
 
 // No default export to prevent Bun from auto-serving a second server
+export {}
+
