@@ -8,330 +8,44 @@ import { getAiringInfo, getRecommendations } from './anilist'
  * Franky - A Towns Protocol bot for anime communities
  */
 
-/**
- * Convert seconds to a friendly ETA string (e.g., "~42h" or "1d 18h")
- */
+// Helper function: Convert seconds to friendly ETA
 function formatETA(seconds: number): string {
     const days = Math.floor(seconds / 86400)
     const hours = Math.floor((seconds % 86400) / 3600)
     const minutes = Math.floor((seconds % 3600) / 60)
 
     if (days > 0) {
-        if (hours > 0) {
-            return `${days}d ${hours}h`
-        }
-        return `${days}d`
+        return hours > 0 ? `${days}d ${hours}h` : `${days}d`
     }
-
     if (hours > 0) {
         return `~${hours}h`
     }
-
-    if (minutes > 0) {
-        return `~${minutes}m`
-    }
-
-    return 'soon'
+    return minutes > 0 ? `~${minutes}m` : 'soon'
 }
 
-// Bot will be initialized after server setup
-let bot: Awaited<ReturnType<typeof makeTownsBot>> | null = null
-let jwtMiddleware: any = null
-let handler: any = null
-
-/**
- * Setup all bot event handlers
- * Called after bot initialization
- */
-// Scam/Spam detection keywords and patterns
+// Scam/Spam keywords
 const SCAM_KEYWORDS = [
-    // Discord Nitro scams
-    'free nitro',
-    'nitro giveaway',
-    'discord nitro',
-    'claim nitro',
-    'nitro reward',
-    
-    // Airdrop scams
-    'claim airdrop',
-    'free airdrop',
-    'airdrop reward',
-    'claim your airdrop',
-    
-    // Seed phrase scams
-    'seed phrase',
-    'private key',
-    'mnemonic',
-    'wallet seed',
-    'recover wallet',
-    
-    // General scam patterns
-    'claim reward',
-    'claim your reward',
-    'free money',
-    'crypto giveaway',
-    'click here to claim',
-    'verify your wallet',
-    'connect wallet to claim',
+    'free nitro', 'nitro giveaway', 'discord nitro', 'claim nitro', 'nitro reward',
+    'claim airdrop', 'free airdrop', 'airdrop reward', 'claim your airdrop',
+    'seed phrase', 'private key', 'mnemonic', 'wallet seed', 'recover wallet',
+    'claim reward', 'claim your reward', 'free money', 'crypto giveaway',
+    'click here to claim', 'verify your wallet', 'connect wallet to claim',
 ]
 
-/**
- * Check if a message contains scam/spam content
- */
 function isScamOrSpam(message: string): boolean {
-    const lowerMessage = message.toLowerCase()
-    return SCAM_KEYWORDS.some(keyword => lowerMessage.includes(keyword.toLowerCase()))
+    const lower = message.toLowerCase()
+    return SCAM_KEYWORDS.some(keyword => lower.includes(keyword.toLowerCase()))
 }
 
-/**
- * Check if message contains the correct trivia answer (case-insensitive)
- */
 function checkTriviaAnswer(message: string, answer: string): boolean {
-    const lowerMessage = message.toLowerCase().trim()
-    const lowerAnswer = answer.toLowerCase().trim()
-    return lowerMessage.includes(lowerAnswer)
+    return message.toLowerCase().trim().includes(answer.toLowerCase().trim())
 }
 
-/**
- * Check if message mentions Franky (case-insensitive)
- */
 function mentionsFranky(message: string, isMentioned: boolean): boolean {
-    const lowerMessage = message.toLowerCase()
-    return isMentioned || lowerMessage.includes('franky')
+    return isMentioned || message.toLowerCase().includes('franky')
 }
 
-function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
-    // Channel join handler
-    bot.onChannelJoin(async (handler, { channelId }) => {
-        console.log(`Franky joined channel: ${channelId}`)
-    })
-
-    // Message handler: Moderation, trivia, and mentions
-    bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned }) => {
-        // Skip checking bot's own messages
-        if (!bot || userId === bot.botId) {
-            return
-        }
-
-        // Check for active trivia game in this channel
-        const triviaGame = activeTriviaGames.get(channelId)
-        if (triviaGame && !triviaGame.hasWinner) {
-            // Check if message contains the correct answer
-            if (checkTriviaAnswer(message, triviaGame.answer)) {
-                // Mark as won and clean up
-                triviaGame.hasWinner = true
-                clearTimeout(triviaGame.timeoutId)
-                activeTriviaGames.delete(channelId)
-
-                // Announce winner
-                await handler.sendMessage(
-                    channelId,
-                    `✅ Correct, <@${userId}>! Answer: ${triviaGame.answer}`,
-                    {
-                        mentions: [{ userId, displayName: 'Winner' }],
-                    },
-                )
-                return // Don't process moderation for winning messages
-            }
-        }
-
-        // Check if Franky is mentioned (case-insensitive)
-        const lowerMessage = message.toLowerCase()
-        if (mentionsFranky(message, isMentioned)) {
-            // Handle greeting patterns (responds to "@franky hello", "hi franky", etc.)
-            if (lowerMessage.includes('hi') || lowerMessage.includes('hello')) {
-                await handler.sendMessage(channelId, 'Hi there 👋')
-                return
-            }
-
-            // Handle introduction question
-            if (lowerMessage.includes('who are you franky')) {
-                await handler.sendMessage(
-                    channelId,
-                    "I'm Franky, the super cyborg of AnimeTown!🌸",
-                )
-                return
-            }
-
-            // Handle goodbye patterns
-            if (lowerMessage.includes('bye franky')) {
-                await handler.sendMessage(channelId, 'See ya later!')
-                return
-            }
-
-            // Handle thank you patterns
-            if (lowerMessage.includes('thanks franky') || lowerMessage.includes('thank you franky')) {
-                await handler.sendMessage(channelId, 'Anytime, nakama! 🙌')
-                return
-            }
-        }
-
-        // Check for scam/spam content
-        if (isScamOrSpam(message)) {
-            // Ignore messages from admins
-            const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-            if (isAdmin) {
-                return
-            }
-
-            // Check if bot has redaction permission (4 = Redact)
-            if (!bot) return // Safety check
-            
-            const canRedact = await handler.checkPermission(
-                channelId,
-                bot.botId,
-                4 // Permission.Redact
-            )
-
-            if (canRedact) {
-                // Delete the scam/spam message
-                await handler.adminRemoveEvent(channelId, eventId)
-                
-                // Log moderation action with timestamp
-                const timestamp = new Date().toISOString()
-                console.log(`[${timestamp}] 🛡️ Moderation: Deleted scam/spam message from ${userId} in channel ${channelId}`)
-                
-                // Optionally send a warning (be careful not to spam)
-                // await handler.sendMessage(
-                //     channelId,
-                //     `⚠️ Removed suspicious message from <@${userId}>`
-                // )
-            } else {
-                const timestamp = new Date().toISOString()
-                console.warn(`[${timestamp}] ⚠️ Cannot delete scam message - bot lacks Redact permission`)
-            }
-        }
-    })
-}
-
-/**
- * Register all slash commands (only if bot initialized successfully)
- */
-if (bot) {
-    /**
-     * /help - Show available commands
-     */
-    bot.onSlashCommand('help', async (handler, { channelId }) => {
-        await handler.sendMessage(
-            channelId,
-            'Franky — Commands\n\n' +
-                '• /airing <title>\n' +
-                '• /recommend <vibe>\n' +
-                '• /quote\n' +
-                '• /guess-anime\n' +
-                '• /news\n' +
-                '• /calendar\n\n' +
-                'Moderation (admins):\n\n' +
-                '• /ban @user • /mute @user 10m • /purge 25',
-        )
-    })
-
-    /**
-     * /airing - Check currently airing anime
-     */
-    bot.onSlashCommand('airing', async (handler, { channelId, args }) => {
-        // Read anime title from args
-        const title = args.join(' ').trim()
-        
-        if (!title) {
-            await handler.sendMessage(
-                channelId,
-                'Usage: `/airing <anime title>`\n' +
-                'Example: `/airing One Piece`',
-            )
-            return
-        }
-
-        try {
-            // Call AniList API
-            const airingInfo = await getAiringInfo(title)
-
-            // Handle not found case
-            if (!airingInfo) {
-                await handler.sendMessage(
-                    channelId,
-                    'Not found. Try a different title.',
-                )
-                return
-            }
-
-            // Format response based on whether next episode info exists
-            if (airingInfo.nextEpisode !== null && airingInfo.timeUntilSeconds !== null) {
-                const eta = formatETA(airingInfo.timeUntilSeconds)
-                
-                await handler.sendMessage(
-                    channelId,
-                    `📺 ${airingInfo.title}\n` +
-                    `Next ep: ~${eta} | #${airingInfo.nextEpisode}\n` +
-                    airingInfo.siteUrl,
-                )
-            } else {
-                await handler.sendMessage(
-                    channelId,
-                    `📺 ${airingInfo.title}\n` +
-                    `No upcoming episode info.\n` +
-                    airingInfo.siteUrl,
-                )
-            }
-        } catch (error) {
-            // Handle API errors
-            await handler.sendMessage(
-                channelId,
-                'AniList is not responding right now. Please try again later.',
-            )
-            console.error('AniList API error:', error)
-        }
-    })
-
-    // Slash command: /recommend
-    bot.onSlashCommand('recommend', async (handler, { channelId, args }) => {
-        // Get vibe from args, default to "action"
-        const vibe = args.join(' ').trim() || 'action'
-
-        try {
-            // Get recommendations from AniList
-            const recommendations = await getRecommendations(vibe)
-
-            // Handle empty results
-            if (recommendations.length === 0) {
-                await handler.sendMessage(
-                    channelId,
-                    `No anime found for vibe "${vibe}". Try a different genre (e.g., action, romance, comedy).`,
-                )
-                return
-            }
-
-            // Format recommendations
-            let message = `🎯 Top ${recommendations.length} "${vibe}" anime\n\n`
-
-            recommendations.forEach((rec) => {
-                // Format episode count
-                const episodesText = rec.episodes !== null ? rec.episodes.toString() : '?'
-
-                // Format score (averageScore is 0-100)
-                const scoreText = rec.score !== null ? rec.score.toString() : '?'
-
-                message += `• ${rec.title} — eps: ${episodesText} — score: ${scoreText}\n`
-                message += `${rec.siteUrl}\n\n`
-            })
-
-            await handler.sendMessage(channelId, message.trim())
-        } catch (error) {
-            // Handle API errors
-            await handler.sendMessage(
-                channelId,
-                'AniList is not responding right now. Please try again later.',
-            )
-            console.error('AniList API error:', error)
-        }
-    })
-
-    // Slash command: /quote
-
-/**
- * Trivia game storage: tracks active games per channel
- * Format: channelId -> { answer: string, clue: string, hasWinner: boolean, timeoutId: NodeJS.Timeout }
- */
+// Trivia game storage
 const activeTriviaGames = new Map<string, {
     answer: string
     clue: string
@@ -339,35 +53,14 @@ const activeTriviaGames = new Map<string, {
     timeoutId: NodeJS.Timeout
 }>()
 
-/**
- * Anime trivia clue/answer pairs
- */
 const TRIVIA_QUESTIONS = [
-    {
-        clue: 'What anime features a young ninja with a nine-tailed fox sealed inside him?',
-        answer: 'Naruto',
-    },
-    {
-        clue: 'In which anime do humans fight giant humanoid creatures called Titans behind three massive walls?',
-        answer: 'Attack on Titan',
-    },
-    {
-        clue: 'What anime follows Izuku Midoriya as he trains to become the world\'s greatest hero?',
-        answer: 'My Hero Academia',
-    },
-    {
-        clue: 'Which anime features a boy who can turn into a Titan and fights to protect humanity?',
-        answer: 'Attack on Titan',
-    },
-    {
-        clue: 'What shonen anime follows a team of ninjas from the Hidden Leaf Village?',
-        answer: 'Naruto',
-    },
+    { clue: 'What anime features a young ninja with a nine-tailed fox sealed inside him?', answer: 'Naruto' },
+    { clue: 'In which anime do humans fight giant humanoid creatures called Titans behind three massive walls?', answer: 'Attack on Titan' },
+    { clue: 'What anime follows Izuku Midoriya as he trains to become the world\'s greatest hero?', answer: 'My Hero Academia' },
+    { clue: 'Which anime features a boy who can turn into a Titan and fights to protect humanity?', answer: 'Attack on Titan' },
+    { clue: 'What shonen anime follows a team of ninjas from the Hidden Leaf Village?', answer: 'Naruto' },
 ]
 
-/**
- * Collection of safe anime quotes
- */
 const ANIME_QUOTES = [
     { quote: 'People live their lives bound by what they accept as correct and true. That\'s how they define reality.', character: 'Itachi Uchiha' },
     { quote: 'Wake up to reality! Nothing ever goes as planned in this world.', character: 'Madara Uchiha' },
@@ -403,392 +96,290 @@ const ANIME_QUOTES = [
     { quote: 'There\'s nothing wrong with letting people who love you help you.', character: 'Uncle Iroh' },
 ]
 
-    bot.onSlashCommand('quote', async (handler, { channelId }) => {
-        // Select a random quote
-        const randomQuote = ANIME_QUOTES[Math.floor(Math.random() * ANIME_QUOTES.length)]
-        
+// Initialize Hono app
+const app = new Hono()
+app.use(logger())
+
+const startTime = Date.now()
+
+// Health endpoints
+app.get('/', () => new Response('Franky is running ✅', { status: 200 }))
+app.get('/health', () => Response.json({ ok: true, uptime: Math.floor((Date.now() - startTime) / 1000) }))
+
+// Initialize bot
+let bot: Awaited<ReturnType<typeof makeTownsBot>> | null = null
+let jwtMiddleware: any = null
+let handler: any = null
+
+// Setup bot handlers
+function setupHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
+    bot.onChannelJoin(async (_, { channelId }) => {
+        console.log(`Franky joined channel: ${channelId}`)
+    })
+
+    bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned }) => {
+        if (userId === bot!.botId) return
+
+        // Trivia check
+        const game = activeTriviaGames.get(channelId)
+        if (game && !game.hasWinner && checkTriviaAnswer(message, game.answer)) {
+            game.hasWinner = true
+            clearTimeout(game.timeoutId)
+            activeTriviaGames.delete(channelId)
+            await handler.sendMessage(channelId, `✅ Correct, <@${userId}>! Answer: ${game.answer}`, {
+                mentions: [{ userId, displayName: 'Winner' }],
+            })
+            return
+        }
+
+        // Mentions
+        if (mentionsFranky(message, isMentioned)) {
+            const lower = message.toLowerCase()
+            if (lower.includes('hi') || lower.includes('hello')) {
+                await handler.sendMessage(channelId, 'Hi there 👋')
+                return
+            }
+            if (lower.includes('who are you franky')) {
+                await handler.sendMessage(channelId, "I'm Franky, the super cyborg of AnimeTown!🌸")
+                return
+            }
+            if (lower.includes('bye franky')) {
+                await handler.sendMessage(channelId, 'See ya later!')
+                return
+            }
+            if (lower.includes('thanks franky') || lower.includes('thank you franky')) {
+                await handler.sendMessage(channelId, 'Anytime, nakama! 🙌')
+                return
+            }
+        }
+
+        // Moderation
+        if (isScamOrSpam(message)) {
+            const isAdmin = await handler.hasAdminPermission(userId, spaceId)
+            if (isAdmin) return
+
+            const canRedact = await handler.checkPermission(channelId, bot!.botId, 4)
+            if (canRedact) {
+                await handler.adminRemoveEvent(channelId, eventId)
+                console.log(`[${new Date().toISOString()}] 🛡️ Deleted scam/spam from ${userId}`)
+            }
+        }
+    })
+
+    // Slash commands
+    bot.onSlashCommand('help', async (handler, { channelId }) => {
         await handler.sendMessage(
             channelId,
-            `💬 "${randomQuote.quote}" — ${randomQuote.character}`,
+            'Franky — Commands\n\n' +
+            '• /airing <title>\n' +
+            '• /recommend <vibe>\n' +
+            '• /quote\n' +
+            '• /guess-anime\n' +
+            '• /news\n' +
+            '• /calendar\n\n' +
+            'Moderation (admins):\n\n' +
+            '• /ban @user • /mute @user 10m • /purge 25'
         )
     })
 
-    /**
-     * /guess-anime - Play guess the anime game (admin only)
-     */
-    bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId }) => {
-        // Check admin permission
-        const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-        
-        if (!isAdmin) {
-            await handler.sendMessage(
-                channelId,
-                '❌ This command is admin-only. You don\'t have permission to use it.',
-            )
+    bot.onSlashCommand('airing', async (handler, { channelId, args }) => {
+        const title = args.join(' ').trim()
+        if (!title) {
+            await handler.sendMessage(channelId, 'Usage: `/airing <title>`\nExample: `/airing One Piece`')
             return
         }
 
-        // Check if there's already an active game in this channel
-        const existingGame = activeTriviaGames.get(channelId)
-        if (existingGame) {
-            await handler.sendMessage(
-                channelId,
-                '❌ There is already an active trivia game in this channel. Wait for it to finish.',
-            )
-            return
-        }
-
-        // Select a random trivia question
-        const randomQuestion = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)]
-
-        // Post the clue
-        await handler.sendMessage(
-            channelId,
-            `**🎮 Guess the Anime**\n\n${randomQuestion.clue}\n\n*You have 60 seconds to answer!*`,
-        )
-
-        // Set up the game
-        const timeoutId = setTimeout(async () => {
-            // Get the game state before cleaning up
-            const game = activeTriviaGames.get(channelId)
-            
-            // Remove the game from active games
-            activeTriviaGames.delete(channelId)
-
-            // Only send timeout message if no one won
-            if (game && !game.hasWinner && bot) {
-                await bot.sendMessage(
-                    channelId,
-                    `⏰ Time's up! The answer was: **${randomQuestion.answer}**`,
-                )
+        try {
+            const info = await getAiringInfo(title)
+            if (!info) {
+                await handler.sendMessage(channelId, 'Not found. Try a different title.')
+                return
             }
-        }, 60000) // 60 seconds
 
-        // Store the active game
+            if (info.nextEpisode !== null && info.timeUntilSeconds !== null) {
+                const eta = formatETA(info.timeUntilSeconds)
+                await handler.sendMessage(channelId, `📺 ${info.title}\nNext ep: ~${eta} | #${info.nextEpisode}\n${info.siteUrl}`)
+            } else {
+                await handler.sendMessage(channelId, `📺 ${info.title}\nNo upcoming episode info.\n${info.siteUrl}`)
+            }
+        } catch (error) {
+            await handler.sendMessage(channelId, 'AniList is not responding right now. Please try again later.')
+            console.error('AniList error:', error)
+        }
+    })
+
+    bot.onSlashCommand('recommend', async (handler, { channelId, args }) => {
+        const vibe = args.join(' ').trim() || 'action'
+        try {
+            const recs = await getRecommendations(vibe)
+            if (recs.length === 0) {
+                await handler.sendMessage(channelId, `No anime found for "${vibe}". Try a different genre.`)
+                return
+            }
+
+            let msg = `🎯 Top ${recs.length} "${vibe}" anime\n\n`
+            for (const rec of recs) {
+                msg += `• ${rec.title} — eps: ${rec.episodes ?? '?'} — score: ${rec.score ?? '?'}\n${rec.siteUrl}\n\n`
+            }
+            await handler.sendMessage(channelId, msg.trim())
+        } catch (error) {
+            await handler.sendMessage(channelId, 'AniList is not responding right now. Please try again later.')
+            console.error('AniList error:', error)
+        }
+    })
+
+    bot.onSlashCommand('quote', async (handler, { channelId }) => {
+        const quote = ANIME_QUOTES[Math.floor(Math.random() * ANIME_QUOTES.length)]
+        await handler.sendMessage(channelId, `💬 "${quote.quote}" — ${quote.character}`)
+    })
+
+    bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId }) => {
+        const isAdmin = await handler.hasAdminPermission(userId, spaceId)
+        if (!isAdmin) {
+            await handler.sendMessage(channelId, '❌ Admin only.')
+            return
+        }
+
+        if (activeTriviaGames.has(channelId)) {
+            await handler.sendMessage(channelId, '❌ Game already active. Wait for it to finish.')
+            return
+        }
+
+        const question = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)]
+        await handler.sendMessage(channelId, `**🎮 Guess the Anime**\n\n${question.clue}\n\n*60 seconds to answer!*`)
+
+        const timeoutId = setTimeout(async () => {
+            const game = activeTriviaGames.get(channelId)
+            activeTriviaGames.delete(channelId)
+            if (game && !game.hasWinner) {
+                await bot!.sendMessage(channelId, `⏰ Time's up! Answer: **${question.answer}**`)
+            }
+        }, 60000)
+
         activeTriviaGames.set(channelId, {
-            answer: randomQuestion.answer,
-            clue: randomQuestion.clue,
+            answer: question.answer,
+            clue: question.clue,
             hasWinner: false,
             timeoutId,
         })
     })
 
-    /**
-     * /news - Get the latest anime news
-     * 
-     * TODO: Hook up RSS feeds to fetch real-time anime news
-     * TODO: Set up Sunday 7 AM cron job to post weekly news summary
-     */
     bot.onSlashCommand('news', async (handler, { channelId }) => {
-        await handler.sendMessage(
-            channelId,
-            '📰 Anime news (coming soon).',
-        )
+        await handler.sendMessage(channelId, '📰 Anime news (coming soon).')
     })
 
-    /**
-     * /calendar - View anime release calendar
-     * 
-     * TODO: Hook up RSS feeds to fetch anime airing schedules
-     * TODO: Set up Sunday 7 AM cron job to post weekly airing calendar
-     */
     bot.onSlashCommand('calendar', async (handler, { channelId }) => {
-        await handler.sendMessage(
-            channelId,
-            '🗓️ Weekly airing calendar (coming soon).',
-        )
+        await handler.sendMessage(channelId, '🗓️ Weekly airing calendar (coming soon).')
     })
 
-    /**
-     * /ban - Ban a user from the space (admin only)
-     */
     bot.onSlashCommand('ban', async (handler, { channelId, userId, spaceId, mentions, args }) => {
-        // Check admin permission
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-        
         if (!isAdmin) {
-            await handler.sendMessage(
-                channelId,
-                '❌ This command is admin-only. You don\'t have permission to ban users.',
-            )
+            await handler.sendMessage(channelId, '❌ Admin only.')
             return
         }
 
-        // Get user to ban (from mentions or args)
         const userToBan = mentions[0]?.userId || args[0]
-        
-        if (!userToBan) {
-            await handler.sendMessage(
-                channelId,
-                '❌ Please mention a user or provide a user ID.\n' +
-                'Usage: `/ban @user` or `/ban <userId>`',
-            )
-            return
-        }
-
-        // Validate user ID format (should be hex address)
-        if (!userToBan.startsWith('0x') || userToBan.length !== 42) {
-            await handler.sendMessage(
-                channelId,
-                '❌ Invalid user ID format. Please mention the user or provide a valid address.',
-            )
+        if (!userToBan || !userToBan.startsWith('0x') || userToBan.length !== 42) {
+            await handler.sendMessage(channelId, '❌ Usage: `/ban @user` or `/ban <userId>`')
             return
         }
 
         try {
-            // Attempt to ban the user (bot must have ModifyBanning permission)
             await handler.ban(userToBan, spaceId)
-            
-            const displayName = mentions[0]?.displayName || userToBan
-            const timestamp = new Date().toISOString()
-            console.log(`[${timestamp}] 🔨 Moderation: User ${userToBan} (${displayName}) banned from space ${spaceId} by ${userId}`)
-            
-            await handler.sendMessage(
-                channelId,
-                `✅ Successfully banned <@${userToBan}> (${displayName}) from the space.`,
-            )
+            console.log(`[${new Date().toISOString()}] 🔨 Banned ${userToBan} by ${userId}`)
+            await handler.sendMessage(channelId, `✅ Banned <@${userToBan}>`)
         } catch (error) {
-            const timestamp = new Date().toISOString()
-            console.error(`[${timestamp}] ❌ Ban error:`, error)
-            await handler.sendMessage(
-                channelId,
-                `❌ Failed to ban user: ${error instanceof Error ? error.message : 'Unknown error'}\n` +
-                `Make sure the bot has ModifyBanning permission.`,
-            )
+            await handler.sendMessage(channelId, `❌ Failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
         }
     })
 
-    // Slash command: /mute
     bot.onSlashCommand('mute', async (handler, { channelId, userId, spaceId, mentions, args }) => {
-        // Check admin permission
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-        
         if (!isAdmin) {
-            await handler.sendMessage(
-                channelId,
-                '❌ This command is admin-only. You don\'t have permission to mute users.',
-            )
+            await handler.sendMessage(channelId, '❌ Admin only.')
             return
         }
 
-        // Get user to mute (from mentions or args)
         const userToMute = mentions[0]?.userId || args[0]
-        
         if (!userToMute) {
-            await handler.sendMessage(
-                channelId,
-                '❌ Please mention a user or provide a user ID.\n' +
-                'Usage: `/mute @user` or `/mute @user 10m`',
-            )
+            await handler.sendMessage(channelId, '❌ Usage: `/mute @user`')
             return
         }
 
-        // TODO: Implement actual muting when Towns API supports it
-        // For now, just acknowledge the command
-        const displayName = mentions[0]?.displayName || userToMute
-        const timestamp = new Date().toISOString()
-        console.log(`[${timestamp}] 🔇 Moderation: User ${userToMute} (${displayName}) muted in channel ${channelId} by ${userId}`)
-        
-        await handler.sendMessage(
-            channelId,
-            `🔇 Muted <@${userToMute}> (${displayName}) in this channel.\n` +
-            `Note: Actual muting functionality coming soon.`,
-        )
-        })
+        console.log(`[${new Date().toISOString()}] 🔇 Muted ${userToMute} by ${userId}`)
+        await handler.sendMessage(channelId, `🔇 Muted <@${userToMute}>\nNote: Actual muting coming soon.`)
+    })
 
-    /**
-     * /purge - Delete multiple messages (admin only)
-     */
-    bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args, replyId }) => {
-        // Check admin permission
+    bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args }) => {
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-        
         if (!isAdmin) {
-            await handler.sendMessage(
-                channelId,
-                '❌ This command is admin-only. You don\'t have permission to purge messages.',
-            )
-            return
-        }
-
-        // Get number of messages to delete
-        if (!args[0]) {
-            await handler.sendMessage(
-                channelId,
-                '❌ Please specify how many messages to delete.\n' +
-                'Usage: `/purge 25` (between 1 and 100)',
-            )
+            await handler.sendMessage(channelId, '❌ Admin only.')
             return
         }
 
         const count = parseInt(args[0])
-        
         if (isNaN(count) || count < 1 || count > 100) {
-            await handler.sendMessage(
-                channelId,
-                '❌ Please specify a valid number between 1 and 100.\n' +
-                'Usage: `/purge 25`',
-            )
+            await handler.sendMessage(channelId, '❌ Usage: `/purge 25` (1-100)')
             return
         }
 
-        // Check if bot has redaction permission (4 = Redact)
-        if (!bot) return // Safety check
-        
-        const canRedact = await handler.checkPermission(
-            channelId,
-            bot.botId,
-            4 // Permission.Redact
-        )
-
-        if (!canRedact) {
-            await handler.sendMessage(
-                channelId,
-                '❌ Bot does not have permission to delete messages. (Requires Redact permission)',
-            )
-            return
-        }
-
-        // TODO: Implement actual message purging
-        // Note: Towns bot framework doesn't provide a direct way to fetch recent messages
-        // This would require implementing message history tracking or using a different approach
-        const timestamp = new Date().toISOString()
-        console.log(`[${timestamp}] 🗑️ Moderation: Purge command executed - attempting to delete ${count} messages in channel ${channelId} by ${userId}`)
-        
-        await handler.sendMessage(
-            channelId,
-            `🗑️ Purge command received. Deleting ${count} messages...\n` +
-            `Note: Message purging requires tracking message history. Implementation coming soon.`,
-        )
+        console.log(`[${new Date().toISOString()}] 🗑️ Purge ${count} messages by ${userId}`)
+        await handler.sendMessage(channelId, `🗑️ Purge ${count} messages...\nNote: Implementation coming soon.`)
     })
 }
 
-/**
- * Track server uptime
- */
-const startTime = Date.now()
-
-/**
- * Initialize Hono server
- */
-const app = new Hono()
-app.use(logger())
-
-// Global error handler
-app.onError((err, c) => {
-    console.error('Request error:', err)
-    if (err instanceof Error) {
-        console.error('Stack trace:', err.stack)
-    }
-    return c.json(
-        { 
-            error: 'Internal server error',
-            message: err instanceof Error ? err.message : 'Unknown error'
-        },
-        500
-    )
-})
-
-// Health check endpoint
-app.get('/', () => {
-    return new Response('Franky is running ✅', {
-        status: 200,
-        headers: { 'Content-Type': 'text/plain' },
-    })
-})
-
-// Health check JSON endpoint with uptime
-app.get('/health', () => {
-    const uptime = Math.floor((Date.now() - startTime) / 1000)
-    return Response.json({ ok: true, uptime })
-})
-
-// Webhook handler - uses bot middleware when ready
-app.post('/webhook', async (c) => {
-    // Check if bot is ready
-    if (!bot || !jwtMiddleware || !handler) {
-        return c.json({ 
-            error: 'Bot not initialized',
-            message: 'Bot is still initializing. Please try again in a moment.'
-        }, 503)
-    }
-    
-    // Bot is ready - call the middleware chain
-    // The handler from bot.start() will finalize the context and return 200
-    try {
-        await jwtMiddleware(c, async () => {
-            await handler(c)
-        })
-        
-        // Handler should have finalized context, but ensure we return 200
-        if (c.res) {
-            return c.res
-        }
-        // If no response was set, return 200 OK
-        return new Response(null, { status: 200 })
-    } catch (error) {
-        console.error('Webhook processing error:', error)
-        return c.json({ error: 'Internal server error' }, 500)
-    }
-})
-
-// Initialize bot asynchronously (non-blocking)
-makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
-    commands,
-})
+// Initialize bot (suppress ConnectError)
+makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands })
     .then((initializedBot) => {
         bot = initializedBot
         const webhook = bot.start()
         jwtMiddleware = webhook.jwtMiddleware
         handler = webhook.handler
-        
-        // Setup all event handlers
-        setupBotHandlers(bot)
-        
-        console.log('✅ Bot initialized successfully')
-        console.log('✅ Webhook handler ready')
+        setupHandlers(bot)
+        console.log('✅ Bot initialized')
     })
     .catch((error) => {
-        // Suppress ConnectError - it's non-fatal
         const isConnectError = error instanceof Error && 
-            (error.message.includes('Connect') || 
-             error.constructor?.name === 'ConnectError' ||
-             error.stack?.includes('connect-error'))
-        
+            (error.message.includes('Connect') || error.stack?.includes('connect-error'))
         if (isConnectError) {
-            console.warn('⚠️ Connection warning (non-fatal, bot may still work)')
+            console.warn('⚠️ Connection warning (non-fatal)')
         } else {
-            console.error('⚠️ Bot initialization error:', error instanceof Error ? error.message : error)
+            console.error('⚠️ Init error:', error instanceof Error ? error.message : error)
         }
     })
 
-// Reject all non-POST requests to /webhook
+// Webhook endpoint - simple and correct
+app.post('/webhook', async (c) => {
+    if (!bot || !jwtMiddleware || !handler) {
+        return c.json({ error: 'Bot initializing' }, 503)
+    }
+    
+    // Use middleware chain - handler will return 200
+    await jwtMiddleware(c, async () => {
+        await handler(c)
+    })
+    
+    // Return response (handler should have set it to 200)
+    return c.res || new Response(null, { status: 200 })
+})
+
 app.all('/webhook', (c) => {
     if (c.req.method !== 'POST') {
         return c.json({ error: 'Method not allowed' }, 405)
     }
 })
 
-/**
- * Start the server with Bun
- * Guard against double initialization
- */
-if (typeof globalThis.__FRANKY_SERVER_STARTED === 'undefined') {
+// Start server
+if (!globalThis.__FRANKY_SERVER_STARTED) {
     globalThis.__FRANKY_SERVER_STARTED = true
-    
     const port = Number(process.env.PORT || 3000)
-
     Bun.serve({
         hostname: '0.0.0.0',
         port,
         fetch: app.fetch,
     })
-
     console.log(`Listening on :${port}`)
-} else {
-    console.warn('⚠️ Server already started, skipping initialization')
 }
 
-// No default export to prevent Bun from auto-serving a second server
 export {}
-
