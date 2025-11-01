@@ -744,10 +744,17 @@ app.get('/health', () => {
 // Towns webhook endpoint - POST only with error handling
 // Use Hono's middleware pattern: app.post(path, middleware1, middleware2, handler)
 if (bot && jwtMiddleware && handler) {
+    // Add logging middleware before JWT middleware
+    app.use('/webhook', async (c, next) => {
+        console.log(`📨 Webhook received: ${new Date().toISOString()}`)
+        await next()
+    })
+    
     app.post('/webhook', jwtMiddleware, handler)
 } else {
     // If bot not initialized, return 503
     app.post('/webhook', async (c) => {
+        console.error('⚠️ Webhook called but bot not initialized')
         return c.json({ 
             error: 'Bot not initialized',
             message: 'Bot initialization failed. Check server logs and verify APP_PRIVATE_DATA and JWT_SECRET are valid.'
