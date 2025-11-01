@@ -636,7 +636,7 @@ if (bot) {
     /**
      * /purge - Delete multiple messages (admin only)
      */
-        bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args, replyId }) => {
+    bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args, replyId }) => {
         // Check admin permission
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         
