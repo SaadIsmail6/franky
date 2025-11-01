@@ -1,4 +1,5 @@
 import { makeTownsBot } from '@towns-protocol/bot'
+import { Hono } from 'hono'
 import commands from './commands'
 import { getAiringInfo, getRecommendations } from './anilist'
 
@@ -104,7 +105,8 @@ const ANIME_QUOTES = [
 // ============================================================================
 
 let bot: Awaited<ReturnType<typeof makeTownsBot>> | null = null
-let webhookHandler: ((req: Request) => Promise<Response>) | null = null
+let jwtMiddleware: any = null
+let webhookHandler: any = null
 const startTime = Date.now()
 
 // ============================================================================
@@ -126,7 +128,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             clearTimeout(game.timeoutId)
             activeTriviaGames.delete(channelId)
             await handler.sendMessage(channelId, `✅ Correct, <@${userId}>! Answer: ${game.answer}`, {
-                mentions: [{ userId, displayName: 'Winner' }],
+                mentions: [{ userId, displayName: 'Winner', mentionBehavior: { case: undefined } }],
             })
             return
         }
@@ -158,7 +160,16 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             const isAdmin = await handler.hasAdminPermission(userId, spaceId)
             if (isAdmin) return
 
-            const canRedact = await handler.checkPermission(channelId, bot!.botId, 4) // Redact = 4
+            // Check redaction permission (4 = Redact, but SDK might expect different format)
+            // Try to check permission - if checkPermission fails, we'll still try to delete
+            let canRedact = false
+            try {
+                // @ts-expect-error - Permission enum may not be exported, using numeric value
+                canRedact = await handler.checkPermission(channelId, bot!.botId, 4)
+            } catch {
+                // If permission check fails, assume we can try (bot will error if it can't)
+                canRedact = true
+            }
             if (canRedact) {
                 await handler.adminRemoveEvent(channelId, eventId)
                 console.log(`[${new Date().toISOString()}] 🛡️ Deleted scam/spam from ${userId}`)
@@ -324,6 +335,7 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
     .then((initializedBot) => {
         bot = initializedBot
         const webhook = bot.start()
+        jwtMiddleware = webhook.jwtMiddleware
         webhookHandler = webhook.handler
         setupBotHandlers(bot)
         console.log('✅ Bot initialized successfully')
@@ -358,6 +370,11 @@ if (!process.env.APP_PRIVATE_DATA || !process.env.JWT_SECRET) {
 // ============================================================================
 
 // Guard against double initialization
+declare global {
+    // eslint-disable-next-line no-var
+    var __FRANKY_SERVER_STARTED: boolean | undefined
+}
+
 if (globalThis.__FRANKY_SERVER_STARTED) {
     console.warn('⚠️ Server already initialized, skipping')
 } else {
@@ -400,7 +417,7 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
             }
 
             // Check if bot is ready
-            if (!bot || !webhookHandler) {
+            if (!bot || !jwtMiddleware || !webhookHandler) {
                 console.log('[WEBHOOK] 503 - Bot not initialized')
                 return new Response(JSON.stringify({ error: 'Bot initializing' }), {
                     status: 503,
@@ -408,10 +425,16 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
                 })
             }
 
-            // Bulletproof webhook handler - return SDK response, ensure 200 OK
+            // Bulletproof webhook handler - use Hono for SDK middleware chain
             try {
-                // Hand off directly to SDK handler - DO NOT pre-read or parse body
-                const res = await webhookHandler(req)
+                // Create minimal Hono app for webhook route
+                const webhookApp = new Hono()
+                if (jwtMiddleware && webhookHandler) {
+                    webhookApp.post('/', jwtMiddleware, webhookHandler)
+                }
+                
+                // Call Hono app with request
+                const res = await webhookApp.fetch(req)
                 
                 // Ensure we return a Response object
                 if (!(res instanceof Response)) {

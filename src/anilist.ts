@@ -121,7 +121,7 @@ export async function getAiringInfo(title: string): Promise<AiringInfo | null> {
         const media = data.data.Media
 
         // Determine title (prefer english, then romaji, then native)
-        const title =
+        const mediaTitle =
             media.title.english || media.title.romaji || media.title.native || 'Unknown'
 
         // Extract next airing episode info
@@ -129,7 +129,7 @@ export async function getAiringInfo(title: string): Promise<AiringInfo | null> {
         const timeUntilSeconds = media.nextAiringEpisode?.timeUntilAiring ?? null
 
         return {
-            title,
+            title: mediaTitle,
             nextEpisode,
             timeUntilSeconds,
             siteUrl: media.siteUrl,
