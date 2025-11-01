@@ -669,10 +669,30 @@ bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args, 
 const { jwtMiddleware, handler } = bot.start()
 
 /**
+ * Track server uptime
+ */
+const startTime = Date.now()
+
+/**
  * Initialize Hono server
  */
 const app = new Hono()
 app.use(logger())
+
+// Global error handler
+app.onError((err, c) => {
+    console.error('Request error:', err)
+    if (err instanceof Error) {
+        console.error('Stack trace:', err.stack)
+    }
+    return c.json(
+        { 
+            error: 'Internal server error',
+            message: err instanceof Error ? err.message : 'Unknown error'
+        },
+        500
+    )
+})
 
 // Health check endpoint
 app.get('/', () => {
@@ -682,25 +702,53 @@ app.get('/', () => {
     })
 })
 
-// Health check JSON endpoint
+// Health check JSON endpoint with uptime
 app.get('/health', () => {
-    return Response.json({ ok: true })
+    const uptime = Math.floor((Date.now() - startTime) / 1000)
+    return Response.json({ ok: true, uptime })
 })
 
-// Towns webhook endpoint
-app.post('/webhook', jwtMiddleware, handler)
+// Towns webhook endpoint - POST only with error handling
+app.post('/webhook', async (c, next) => {
+    try {
+        await jwtMiddleware(c, async () => {
+            await handler(c)
+        })
+    } catch (error) {
+        // Log full error stack for debugging
+        console.error('Webhook error:', error)
+        if (error instanceof Error) {
+            console.error('Stack trace:', error.stack)
+        }
+        throw error // Let onError handle it
+    }
+})
+
+// Reject all non-POST requests to /webhook
+app.all('/webhook', (c) => {
+    if (c.req.method !== 'POST') {
+        return c.json({ error: 'Method not allowed' }, 405)
+    }
+})
 
 /**
  * Start the server with Bun
+ * Guard against double initialization
  */
-const port = Number(process.env.PORT || 3000)
+if (typeof globalThis.__FRANKY_SERVER_STARTED === 'undefined') {
+    globalThis.__FRANKY_SERVER_STARTED = true
+    
+    const port = Number(process.env.PORT || 3000)
 
-Bun.serve({
-    hostname: '0.0.0.0',
-    port,
-    fetch: app.fetch,
-})
+    Bun.serve({
+        hostname: '0.0.0.0',
+        port,
+        fetch: app.fetch,
+    })
 
-console.log(`Listening on :${port}`)
+    console.log(`Listening on :${port}`)
+} else {
+    console.warn('⚠️ Server already started, skipping initialization')
+}
 
 export default app
