@@ -363,7 +363,10 @@ Bun.serve({
 
         // GET /health
         if (method === 'GET' && path === '/health') {
-            return Response.json({ ok: true })
+            return new Response(JSON.stringify({ ok: true }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            })
         }
 
         // POST /webhook - hand off directly to SDK handler
@@ -373,43 +376,43 @@ Bun.serve({
             // Check if bot is ready
             if (!bot || !webhookHandler) {
                 console.log('⚠️ Bot not ready, returning 503')
-                return new Response(JSON.stringify({ error: 'Bot initializing' }), {
+                const res = new Response(JSON.stringify({ error: 'Bot initializing' }), {
                     status: 503,
                     headers: { 'Content-Type': 'application/json' },
                 })
+                console.log(`POST /webhook → 503`)
+                return res
             }
 
             // Hand off directly to SDK handler - DO NOT pre-read or parse body
             try {
-                const response = await webhookHandler(req)
-                console.log(`✅ Webhook processed, status: ${response.status}`)
-                return response
-            } catch (error) {
-                // Check for JWT verification failures
-                if (error instanceof Error) {
-                    const errorMessage = error.message.toLowerCase()
-                    if (errorMessage.includes('jwt') || 
-                        errorMessage.includes('secret') || 
-                        errorMessage.includes('verification') ||
-                        errorMessage.includes('signature')) {
-                        console.error('❌ JWT verification failed - check JWT_SECRET:', error.message)
-                        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-                            status: 401,
-                            headers: { 'Content-Type': 'application/json' },
-                        })
-                    }
+                const res = await webhookHandler(req)
+                
+                // Ensure response is a Response instance, default to 200 OK
+                if (!(res instanceof Response)) {
+                    console.log(`POST /webhook → 200 (wrapped)`)
+                    return new Response('OK', { status: 200 })
                 }
                 
-                // Any other error - log stack and return 500
-                console.error('❌ Webhook processing error:')
-                console.error(error)
+                // If response exists but isn't 200, log it (SDK should return 200)
+                const status = res.status || 200
+                console.log(`POST /webhook → ${status}`)
+                
+                // Always return 200 OK for Towns (Towns requires 200)
+                if (status !== 200) {
+                    console.warn(`⚠️ SDK returned ${status}, converting to 200`)
+                    return new Response('OK', { status: 200 })
+                }
+                
+                return res
+            } catch (error) {
+                console.error('❌ Webhook error:', error)
                 if (error instanceof Error && error.stack) {
                     console.error('Stack trace:', error.stack)
                 }
-                return new Response(JSON.stringify({ error: 'Internal server error' }), {
-                    status: 500,
-                    headers: { 'Content-Type': 'application/json' },
-                })
+                const res = new Response('Webhook failed', { status: 500 })
+                console.log(`POST /webhook → 500`)
+                return res
             }
         }
 
