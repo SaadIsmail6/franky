@@ -751,4 +751,4 @@ if (typeof globalThis.__FRANKY_SERVER_STARTED === 'undefined') {
     console.warn('⚠️ Server already started, skipping initialization')
 }
 
-export default app
+// No default export to prevent Bun from auto-serving a second server
