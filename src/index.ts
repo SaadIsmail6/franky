@@ -21,6 +21,29 @@ function formatETA(seconds: number): string {
     return minutes > 0 ? `~${minutes}m` : 'soon'
 }
 
+function truncateText(text: string, maxLength: number = 80): string {
+    if (text.length <= maxLength) return text
+    return text.slice(0, maxLength - 3) + '...'
+}
+
+async function safeSendMessage(
+    handler: any,
+    channelId: string,
+    message: string,
+    opts?: any
+): Promise<void> {
+    const preview = truncateText(message)
+    console.log(`[REPLY] to channel=${channelId} text="${preview}"`)
+    try {
+        await handler.sendMessage(channelId, message, opts)
+    } catch (error) {
+        const code = (error as any)?.code || 'unknown'
+        const msg = error instanceof Error ? error.message : String(error)
+        console.error(`[SEND-ERROR] code=${code} message="${msg}"`)
+        throw error // Re-throw so caller can handle if needed
+    }
+}
+
 // ============================================================================
 // MODERATION
 // ============================================================================
@@ -120,7 +143,15 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
     })
 
     bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned }) => {
-        if (userId === bot!.botId) return
+        // Log event summary
+        const msgPreview = truncateText(message)
+        console.log(`[EVENT] type=message channel=${channelId || ''} author=${userId || ''} text=${msgPreview}`)
+
+        // Ignore self-messages
+        if (userId === bot!.botId) {
+            console.log(`[EVENT] Ignoring self-message from bot`)
+            return
+        }
 
         // Trivia check
         const game = activeTriviaGames.get(channelId)
@@ -128,30 +159,35 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             game.hasWinner = true
             clearTimeout(game.timeoutId)
             activeTriviaGames.delete(channelId)
-            await handler.sendMessage(channelId, `✅ Correct, <@${userId}>! Answer: ${game.answer}`, {
+            await safeSendMessage(handler, channelId, `✅ Correct, <@${userId}>! Answer: ${game.answer}`, {
                 mentions: [{ userId, displayName: 'Winner', mentionBehavior: { case: undefined } }],
             })
             return
         }
 
-        // Mentions
+        // Mentions - case-insensitive check for "@franky" or "franky"
         const lower = message.toLowerCase()
-        const mentioned = isMentioned || lower.includes('franky')
+        const botNameLower = 'franky'
+        // Check for mention or name match (case-insensitive)
+        const mentioned = isMentioned || 
+                         lower.includes(`@${botNameLower}`) || 
+                         lower.includes(botNameLower)
+        
         if (mentioned) {
             if (lower.includes('hi') || lower.includes('hello')) {
-                await handler.sendMessage(channelId, 'Hi there 👋')
+                await safeSendMessage(handler, channelId, 'Hi there 👋')
                 return
             }
             if (lower.includes('who are you franky')) {
-                await handler.sendMessage(channelId, "I'm Franky, the super cyborg of AnimeTown!🌸")
+                await safeSendMessage(handler, channelId, "I'm Franky, the super cyborg of AnimeTown!🌸")
                 return
             }
             if (lower.includes('bye franky')) {
-                await handler.sendMessage(channelId, 'See ya later!')
+                await safeSendMessage(handler, channelId, 'See ya later!')
                 return
             }
             if (lower.includes('thanks franky') || lower.includes('thank you franky')) {
-                await handler.sendMessage(channelId, 'Anytime, nakama! 🙌')
+                await safeSendMessage(handler, channelId, 'Anytime, nakama! 🙌')
                 return
             }
         }
@@ -179,8 +215,10 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
     })
 
     // Slash commands
-    bot.onSlashCommand('help', async (handler, { channelId }) => {
-        await handler.sendMessage(
+    bot.onSlashCommand('help', async (handler, { channelId, args }) => {
+        console.log(`[SLASH] /help args="${args.join(' ')}"`)
+        await safeSendMessage(
+            handler,
             channelId,
             'Franky — Commands\n\n' +
             '• /airing <title>\n' +
@@ -195,70 +233,82 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
     })
 
     bot.onSlashCommand('airing', async (handler, { channelId, args }) => {
+        console.log(`[SLASH] /airing args="${args.join(' ')}"`)
         const title = args.join(' ').trim()
         if (!title) {
-            await handler.sendMessage(channelId, 'Usage: `/airing <title>`\nExample: `/airing One Piece`')
+            await safeSendMessage(handler, channelId, 'Usage: `/airing <title>`\nExample: `/airing One Piece`')
             return
         }
         try {
             const info = await getAiringInfo(title)
             if (!info) {
-                await handler.sendMessage(channelId, 'Not found. Try a different title.')
+                await safeSendMessage(handler, channelId, 'Not found. Try a different title.')
                 return
             }
             if (info.nextEpisode !== null && info.timeUntilSeconds !== null) {
                 const eta = formatETA(info.timeUntilSeconds)
-                await handler.sendMessage(channelId, `📺 ${info.title}\nNext ep: ~${eta} | #${info.nextEpisode}\n${info.siteUrl}`)
+                await safeSendMessage(handler, channelId, `📺 ${info.title}\nNext ep: ~${eta} | #${info.nextEpisode}\n${info.siteUrl}`)
             } else {
-                await handler.sendMessage(channelId, `📺 ${info.title}\nNo upcoming episode info.\n${info.siteUrl}`)
+                await safeSendMessage(handler, channelId, `📺 ${info.title}\nNo upcoming episode info.\n${info.siteUrl}`)
             }
         } catch (error) {
-            await handler.sendMessage(channelId, 'AniList is not responding right now. Please try again later.')
+            await safeSendMessage(handler, channelId, 'AniList is not responding right now. Please try again later.')
             console.error('AniList error:', error)
         }
     })
 
     bot.onSlashCommand('recommend', async (handler, { channelId, args }) => {
+        console.log(`[SLASH] /recommend args="${args.join(' ')}"`)
         const vibe = args.join(' ').trim() || 'action'
         try {
             const recs = await getRecommendations(vibe)
             if (recs.length === 0) {
-                await handler.sendMessage(channelId, `No anime found for "${vibe}". Try a different genre.`)
+                await safeSendMessage(handler, channelId, `No anime found for "${vibe}". Try a different genre.`)
                 return
             }
             let msg = `🎯 Top ${recs.length} "${vibe}" anime\n\n`
             for (const rec of recs) {
                 msg += `• ${rec.title} — eps: ${rec.episodes ?? '?'} — score: ${rec.score ?? '?'}\n${rec.siteUrl}\n\n`
             }
-            await handler.sendMessage(channelId, msg.trim())
+            await safeSendMessage(handler, channelId, msg.trim())
         } catch (error) {
-            await handler.sendMessage(channelId, 'AniList is not responding right now. Please try again later.')
+            await safeSendMessage(handler, channelId, 'AniList is not responding right now. Please try again later.')
             console.error('AniList error:', error)
         }
     })
 
-    bot.onSlashCommand('quote', async (handler, { channelId }) => {
+    bot.onSlashCommand('quote', async (handler, { channelId, args }) => {
+        console.log(`[SLASH] /quote args="${args.join(' ')}"`)
         const quote = ANIME_QUOTES[Math.floor(Math.random() * ANIME_QUOTES.length)]
-        await handler.sendMessage(channelId, `💬 "${quote.quote}" — ${quote.character}`)
+        await safeSendMessage(handler, channelId, `💬 "${quote.quote}" — ${quote.character}`)
     })
 
-    bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId }) => {
+    bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId, args }) => {
+        console.log(`[SLASH] /guess-anime args="${args.join(' ')}"`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
-            await handler.sendMessage(channelId, '❌ Admin only.')
+            await safeSendMessage(handler, channelId, '❌ Admin only.')
             return
         }
         if (activeTriviaGames.has(channelId)) {
-            await handler.sendMessage(channelId, '❌ Game already active. Wait for it to finish.')
+            await safeSendMessage(handler, channelId, '❌ Game already active. Wait for it to finish.')
             return
         }
         const question = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)]
-        await handler.sendMessage(channelId, `**🎮 Guess the Anime**\n\n${question.clue}\n\n*60 seconds to answer!*`)
+        await safeSendMessage(handler, channelId, `**🎮 Guess the Anime**\n\n${question.clue}\n\n*60 seconds to answer!*`)
         const timeoutId = setTimeout(async () => {
             const game = activeTriviaGames.get(channelId)
             activeTriviaGames.delete(channelId)
             if (game && !game.hasWinner && bot) {
-                await bot.sendMessage(channelId, `⏰ Time's up! Answer: **${question.answer}**`)
+                try {
+                    await bot.sendMessage(channelId, `⏰ Time's up! Answer: **${question.answer}**`)
+                    const preview = truncateText(`⏰ Time's up! Answer: **${question.answer}**`)
+                    console.log(`[REPLY] to channel=${channelId} text="${preview}"`)
+                } catch (error) {
+                    const code = (error as any)?.code || 'unknown'
+                    const msg = error instanceof Error ? error.message : String(error)
+                    console.error(`[SEND-ERROR] code=${code} message="${msg}"`)
+                }
             }
         }, 60000)
         activeTriviaGames.set(channelId, {
@@ -269,62 +319,67 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         })
     })
 
-    bot.onSlashCommand('news', async (handler, { channelId }) => {
-        await handler.sendMessage(channelId, '📰 Anime news (coming soon).')
+    bot.onSlashCommand('news', async (handler, { channelId, args }) => {
+        console.log(`[SLASH] /news args="${args.join(' ')}"`)
+        await safeSendMessage(handler, channelId, '📰 Anime news (coming soon).')
     })
 
-    bot.onSlashCommand('calendar', async (handler, { channelId }) => {
-        await handler.sendMessage(channelId, '🗓️ Weekly airing calendar (coming soon).')
+    bot.onSlashCommand('calendar', async (handler, { channelId, args }) => {
+        console.log(`[SLASH] /calendar args="${args.join(' ')}"`)
+        await safeSendMessage(handler, channelId, '🗓️ Weekly airing calendar (coming soon).')
     })
 
     bot.onSlashCommand('ban', async (handler, { channelId, userId, spaceId, mentions, args }) => {
+        console.log(`[SLASH] /ban args="${args.join(' ')}"`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
-            await handler.sendMessage(channelId, '❌ Admin only.')
+            await safeSendMessage(handler, channelId, '❌ Admin only.')
             return
         }
         const userToBan = mentions[0]?.userId || args[0]
         if (!userToBan || !userToBan.startsWith('0x') || userToBan.length !== 42) {
-            await handler.sendMessage(channelId, '❌ Usage: `/ban @user` or `/ban <userId>`')
+            await safeSendMessage(handler, channelId, '❌ Usage: `/ban @user` or `/ban <userId>`')
             return
         }
         try {
             await handler.ban(userToBan, spaceId)
             console.log(`[${new Date().toISOString()}] 🔨 Banned ${userToBan} by ${userId}`)
-            await handler.sendMessage(channelId, `✅ Banned <@${userToBan}>`)
+            await safeSendMessage(handler, channelId, `✅ Banned <@${userToBan}>`)
         } catch (error) {
-            await handler.sendMessage(channelId, `❌ Failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+            await safeSendMessage(handler, channelId, `❌ Failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
         }
     })
 
     bot.onSlashCommand('mute', async (handler, { channelId, userId, spaceId, mentions, args }) => {
+        console.log(`[SLASH] /mute args="${args.join(' ')}"`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
-            await handler.sendMessage(channelId, '❌ Admin only.')
+            await safeSendMessage(handler, channelId, '❌ Admin only.')
             return
         }
         const userToMute = mentions[0]?.userId || args[0]
         if (!userToMute) {
-            await handler.sendMessage(channelId, '❌ Usage: `/mute @user`')
+            await safeSendMessage(handler, channelId, '❌ Usage: `/mute @user`')
             return
         }
         console.log(`[${new Date().toISOString()}] 🔇 Muted ${userToMute} by ${userId}`)
-        await handler.sendMessage(channelId, `🔇 Muted <@${userToMute}>\nNote: Actual muting coming soon.`)
+        await safeSendMessage(handler, channelId, `🔇 Muted <@${userToMute}>\nNote: Actual muting coming soon.`)
     })
 
     bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args }) => {
+        console.log(`[SLASH] /purge args="${args.join(' ')}"`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
-            await handler.sendMessage(channelId, '❌ Admin only.')
+            await safeSendMessage(handler, channelId, '❌ Admin only.')
             return
         }
         const count = parseInt(args[0])
         if (isNaN(count) || count < 1 || count > 100) {
-            await handler.sendMessage(channelId, '❌ Usage: `/purge 25` (1-100)')
+            await safeSendMessage(handler, channelId, '❌ Usage: `/purge 25` (1-100)')
             return
         }
         console.log(`[${new Date().toISOString()}] 🗑️ Purge ${count} messages by ${userId}`)
-        await handler.sendMessage(channelId, `🗑️ Purge ${count} messages...\nNote: Implementation coming soon.`)
+        await safeSendMessage(handler, channelId, `🗑️ Purge ${count} messages...\nNote: Implementation coming soon.`)
     })
 }
 
@@ -432,6 +487,9 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
             // Check if webhook app is ready (never return 503 to Towns)
             if (!webhookApp) {
                 console.log('[WEBHOOK] Bot still initializing, returning 200')
+                if (process.env.FRANKY_DEBUG === 'true') {
+                    console.log('[WEBHOOK] 200 handled (initializing)')
+                }
                 return new Response('OK: initializing', { status: 200 })
             }
 
@@ -442,6 +500,9 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
                 // Ensure we return a Response object
                 if (!(res instanceof Response)) {
                     console.log('[WEBHOOK] 200 (wrapped non-Response)')
+                    if (process.env.FRANKY_DEBUG === 'true') {
+                        console.log('[WEBHOOK] 200 handled (non-Response wrapped)')
+                    }
                     return new Response('OK', { status: 200 })
                 }
                 
@@ -451,11 +512,18 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
                 
                 // Towns requires HTTP 200 OK - return SDK response if 200, otherwise normalize to 200
                 if (status === 200) {
+                    // Debug logging if enabled
+                    if (process.env.FRANKY_DEBUG === 'true') {
+                        console.log('[WEBHOOK] 200 handled')
+                    }
                     return res
                 }
                 
                 // SDK returned non-200 - log warning and return 200 OK (Towns requirement)
                 console.warn(`[WEBHOOK] Warning: SDK returned ${status}, normalizing to 200 OK`)
+                if (process.env.FRANKY_DEBUG === 'true') {
+                    console.log('[WEBHOOK] 200 handled (normalized)')
+                }
                 return new Response('OK', { status: 200 })
             } catch (error) {
                 // Fatal error - log with stack trace and return 500
