@@ -32,14 +32,13 @@ async function safeSendMessage(
     message: string,
     opts?: any
 ): Promise<void> {
-    const preview = truncateText(message)
-    console.log(`[REPLY] to channel=${channelId} text="${preview}"`)
+    const preview = message.slice(0, 80)
+    console.log(`[REPLY] channel=${channelId} text="${preview}${message.length > 80 ? '...' : ''}"`)
     try {
         await handler.sendMessage(channelId, message, opts)
     } catch (error) {
-        const code = (error as any)?.code || 'unknown'
         const msg = error instanceof Error ? error.message : String(error)
-        console.error(`[SEND-ERROR] code=${code} message="${msg}"`)
+        console.error(`[SEND-ERROR]`, msg)
         throw error // Re-throw so caller can handle if needed
     }
 }
@@ -165,32 +164,39 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             return
         }
 
-        // Mentions - case-insensitive check for "@franky" or "franky"
+        // Mentions - case-insensitive check with word boundaries
         const lower = message.toLowerCase()
         const botNameLower = 'franky'
-        // Check for mention or name match (case-insensitive)
-        const mentioned = isMentioned || 
-                         lower.includes(`@${botNameLower}`) || 
-                         lower.includes(botNameLower)
+        // Check for @-mention or word boundary match for "franky"
+        const hasWordBoundaryMatch = /\bfranky\b/.test(lower)
+        const hasAtMention = isMentioned || lower.includes(`@${botNameLower}`)
+        const seenMention = hasAtMention || hasWordBoundaryMatch
+        let willReply = false
         
-        if (mentioned) {
+        if (seenMention) {
             if (lower.includes('hi') || lower.includes('hello')) {
-                await safeSendMessage(handler, channelId, 'Hi there 👋')
+                await safeSendMessage(handler, channelId, 'Hi there 👋 SUPER!!')
+                willReply = true
                 return
             }
             if (lower.includes('who are you franky')) {
-                await safeSendMessage(handler, channelId, "I'm Franky, the super cyborg of AnimeTown!🌸")
+                await safeSendMessage(handler, channelId, "I'm Franky, the super cyborg of AnimeTown 🤖")
+                willReply = true
                 return
             }
             if (lower.includes('bye franky')) {
-                await safeSendMessage(handler, channelId, 'See ya later!')
+                await safeSendMessage(handler, channelId, 'See ya later! Don\'t skip the next episode!')
+                willReply = true
                 return
             }
             if (lower.includes('thanks franky') || lower.includes('thank you franky')) {
                 await safeSendMessage(handler, channelId, 'Anytime, nakama! 🙌')
+                willReply = true
                 return
             }
         }
+        
+        console.log(`[MSG] seen mention?=${seenMention} willReply?=${willReply}`)
 
         // Moderation
         if (isScamOrSpam(message)) {
@@ -217,7 +223,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
     // Slash commands
     bot.onSlashCommand('help', async (handler, event) => {
         const { channelId, args } = event
-        console.log(`[SLASH] /help args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /help args="${(args || []).join(' ')}" channel=${channelId}`)
         await safeSendMessage(
             handler,
         channelId,
@@ -235,7 +241,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 
     bot.onSlashCommand('airing', async (handler, event) => {
         const { channelId, args } = event
-        console.log(`[SLASH] /airing args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /airing args="${(args || []).join(' ')}" channel=${channelId}`)
         const title = (args || []).join(' ').trim()
         if (!title) {
             await safeSendMessage(handler, channelId, 'Usage: `/airing <title>`\nExample: `/airing One Piece`')
@@ -261,7 +267,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 
     bot.onSlashCommand('recommend', async (handler, event) => {
         const { channelId, args } = event
-        console.log(`[SLASH] /recommend args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /recommend args="${(args || []).join(' ')}" channel=${channelId}`)
         const vibe = (args || []).join(' ').trim() || 'action'
         try {
             const recs = await getRecommendations(vibe)
@@ -282,7 +288,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 
     bot.onSlashCommand('quote', async (handler, event) => {
         const { channelId, args } = event
-        console.log(`[SLASH] /quote args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /quote args="${(args || []).join(' ')}" channel=${channelId}`)
         const quote = ANIME_QUOTES[Math.floor(Math.random() * ANIME_QUOTES.length)]
         await safeSendMessage(handler, channelId, `💬 "${quote.quote}" — ${quote.character}`)
     })
@@ -324,32 +330,34 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
     }
 
     bot.onSlashCommand('guess_anime', async (handler, event) => {
-        console.log(`[SLASH] /guess_anime args="${(event.args || []).join(' ')}"`)
+        const { channelId, args } = event
+        console.log(`[SLASH] /guess_anime args="${(args || []).join(' ')}" channel=${channelId}`)
         await guessAnimeHandler(handler, event)
     })
 
     // Backward compatibility: deprecated guess-anime alias
     bot.onSlashCommand('guess-anime', async (handler, event) => {
+        const { channelId, args } = event
         console.log(`[SLASH] deprecated alias guess-anime -> guess_anime`)
-        console.log(`[SLASH] /guess_anime args="${(event.args || []).join(' ')}"`)
+        console.log(`[SLASH] /guess_anime args="${(args || []).join(' ')}" channel=${channelId}`)
         await guessAnimeHandler(handler, event)
     })
 
     bot.onSlashCommand('news', async (handler, event) => {
         const { channelId, args } = event
-        console.log(`[SLASH] /news args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /news args="${(args || []).join(' ')}" channel=${channelId}`)
         await safeSendMessage(handler, channelId, '📰 Anime news (coming soon).')
     })
 
     bot.onSlashCommand('calendar', async (handler, event) => {
         const { channelId, args } = event
-        console.log(`[SLASH] /calendar args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /calendar args="${(args || []).join(' ')}" channel=${channelId}`)
         await safeSendMessage(handler, channelId, '🗓️ Weekly airing calendar (coming soon).')
     })
 
     bot.onSlashCommand('ban', async (handler, event) => {
         const { channelId, userId, spaceId, mentions, args } = event
-        console.log(`[SLASH] /ban args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /ban args="${(args || []).join(' ')}" channel=${channelId}`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
             await safeSendMessage(handler, channelId, '❌ Admin only.')
@@ -371,7 +379,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 
     bot.onSlashCommand('mute', async (handler, event) => {
         const { channelId, userId, spaceId, mentions, args } = event
-        console.log(`[SLASH] /mute args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /mute args="${(args || []).join(' ')}" channel=${channelId}`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
             await safeSendMessage(handler, channelId, '❌ Admin only.')
@@ -388,7 +396,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 
     bot.onSlashCommand('purge', async (handler, event) => {
         const { channelId, userId, spaceId, args } = event
-        console.log(`[SLASH] /purge args="${(args || []).join(' ')}"`)
+        console.log(`[SLASH] /purge args="${(args || []).join(' ')}" channel=${channelId}`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
             await safeSendMessage(handler, channelId, '❌ Admin only.')
@@ -401,6 +409,23 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         }
         console.log(`[${new Date().toISOString()}] 🗑️ Purge ${count} messages by ${userId}`)
         await safeSendMessage(handler, channelId, `🗑️ Purge ${count} messages...\nNote: Implementation coming soon.`)
+    })
+
+    bot.onSlashCommand('ping', async (handler, event) => {
+        const { channelId, args } = event
+        console.log(`[SLASH] /ping args="${(args || []).join(' ')}" channel=${channelId}`)
+        await safeSendMessage(handler, channelId, 'pong')
+    })
+
+    bot.onSlashCommand('diag', async (handler, event) => {
+        const { channelId, args } = event
+        console.log(`[SLASH] /diag args="${(args || []).join(' ')}" channel=${channelId}`)
+        const botName = bot?.botId || 'unknown'
+        const forwardingMode = 'unknown' // Forwarding mode not directly accessible from bot instance
+        const cmdCount = commands.length
+        const timestamp = new Date().toISOString()
+        const status = `ok | name=${botName} mode=${forwardingMode} cmds=${cmdCount} time=${timestamp}`
+        await safeSendMessage(handler, channelId, status)
     })
 }
 

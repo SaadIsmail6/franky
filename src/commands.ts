@@ -45,6 +45,14 @@ const commands = [
         name: 'purge',
         description: 'Delete multiple messages (admin only)',
     },
+    {
+        name: 'ping',
+        description: 'Ping the bot',
+    },
+    {
+        name: 'diag',
+        description: 'Get bot diagnostics',
+    },
 ] as const satisfies PlainMessage<SlashCommand>[]
 
 // Validate all command names match /^[A-Za-z0-9_]+$/
