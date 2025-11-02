@@ -132,6 +132,16 @@ let webhookHandler: any = null
 let webhookApp: Hono | null = null // Initialize ONCE after bot.start()
 const startTime = Date.now()
 
+// Parse APP_PRIVATE_DATA at startup to extract app_id (no secrets)
+let appId: string | null = null
+try {
+    const appJson = JSON.parse(process.env.APP_PRIVATE_DATA || "{}")
+    appId = appJson.app_id || null
+} catch {
+    // If parsing fails, appId remains null
+}
+console.log("[START] app_id=", appId)
+
 // ============================================================================
 // BOT HANDLERS SETUP
 // ============================================================================
@@ -529,6 +539,19 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
         if (method === 'GET' && path === '/health') {
             const uptime = Math.floor((Date.now() - startTime) / 1000)
             return new Response(JSON.stringify({ ok: true, uptime, ts: new Date().toISOString() }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            })
+        }
+
+        // GET /config
+        if (method === 'GET' && path === '/config') {
+            const commandNames = commands.map(c => c.name)
+            return new Response(JSON.stringify({
+                app_id: appId,
+                has_jwt: Boolean(process.env.JWT_SECRET),
+                commands: commandNames,
+            }), {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' },
             })
