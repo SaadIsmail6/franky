@@ -107,6 +107,7 @@ const ANIME_QUOTES = [
 let bot: Awaited<ReturnType<typeof makeTownsBot>> | null = null
 let jwtMiddleware: any = null
 let webhookHandler: any = null
+let webhookApp: Hono | null = null // Initialize ONCE after bot.start()
 const startTime = Date.now()
 
 // ============================================================================
@@ -337,6 +338,13 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
         const webhook = bot.start()
         jwtMiddleware = webhook.jwtMiddleware
         webhookHandler = webhook.handler
+        
+        // Initialize Hono webhook app ONCE (not per-request)
+        webhookApp = new Hono()
+        // Register both /webhook and /webhook/ to handle trailing slash
+        webhookApp.post('/webhook', jwtMiddleware, webhookHandler)
+        webhookApp.post('/webhook/', jwtMiddleware, webhookHandler)
+        
         setupBotHandlers(bot)
         console.log('✅ Bot initialized successfully')
     })
@@ -407,8 +415,8 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
             })
         }
 
-        // POST /webhook or POST /webhook/
-        if (method === 'POST' && (path === '/webhook' || path === '/webhook/')) {
+        // POST /webhook or POST /webhook/ - handle webhook requests
+        if (path === '/webhook' || path === '/webhook/') {
             // Safe mode: immediately return 200 without calling SDK
             if (process.env.WEBHOOK_ALWAYS_200 === 'true') {
                 console.log('[SAFE MODE] Returning 200 without SDK call')
@@ -416,24 +424,19 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
                 return new Response('OK', { status: 200 })
             }
 
-            // Check if bot is ready
-            if (!bot || !jwtMiddleware || !webhookHandler) {
-                console.log('[WEBHOOK] 503 - Bot not initialized')
-                return new Response(JSON.stringify({ error: 'Bot initializing' }), {
-                    status: 503,
-                    headers: { 'Content-Type': 'application/json' },
-                })
+            // Only POST is allowed on /webhook paths
+            if (method !== 'POST') {
+                return new Response('Method not allowed', { status: 405 })
             }
 
-            // Bulletproof webhook handler - use Hono for SDK middleware chain
+            // Check if webhook app is ready (never return 503 to Towns)
+            if (!webhookApp) {
+                console.log('[WEBHOOK] Bot still initializing, returning 200')
+                return new Response('OK: initializing', { status: 200 })
+            }
+
+            // Call pre-initialized Hono webhook app (don't pre-read req.body)
             try {
-                // Create minimal Hono app for webhook route
-                const webhookApp = new Hono()
-                if (jwtMiddleware && webhookHandler) {
-                    webhookApp.post('/', jwtMiddleware, webhookHandler)
-                }
-                
-                // Call Hono app with request
                 const res = await webhookApp.fetch(req)
                 
                 // Ensure we return a Response object
