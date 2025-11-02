@@ -215,16 +215,17 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
     })
 
     // Slash commands
-    bot.onSlashCommand('help', async (handler, { channelId, args }) => {
-        console.log(`[SLASH] /help args="${args.join(' ')}"`)
+    bot.onSlashCommand('help', async (handler, event) => {
+        const { channelId, args } = event
+        console.log(`[SLASH] /help args="${(args || []).join(' ')}"`)
         await safeSendMessage(
             handler,
-            channelId,
+        channelId,
             'Franky — Commands\n\n' +
             '• /airing <title>\n' +
             '• /recommend <vibe>\n' +
             '• /quote\n' +
-            '• /guess-anime\n' +
+            '• /guess_anime\n' +
             '• /news\n' +
             '• /calendar\n\n' +
             'Moderation (admins):\n\n' +
@@ -232,9 +233,10 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         )
     })
 
-    bot.onSlashCommand('airing', async (handler, { channelId, args }) => {
-        console.log(`[SLASH] /airing args="${args.join(' ')}"`)
-        const title = args.join(' ').trim()
+    bot.onSlashCommand('airing', async (handler, event) => {
+        const { channelId, args } = event
+        console.log(`[SLASH] /airing args="${(args || []).join(' ')}"`)
+        const title = (args || []).join(' ').trim()
         if (!title) {
             await safeSendMessage(handler, channelId, 'Usage: `/airing <title>`\nExample: `/airing One Piece`')
             return
@@ -257,15 +259,16 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         }
     })
 
-    bot.onSlashCommand('recommend', async (handler, { channelId, args }) => {
-        console.log(`[SLASH] /recommend args="${args.join(' ')}"`)
-        const vibe = args.join(' ').trim() || 'action'
+    bot.onSlashCommand('recommend', async (handler, event) => {
+        const { channelId, args } = event
+        console.log(`[SLASH] /recommend args="${(args || []).join(' ')}"`)
+        const vibe = (args || []).join(' ').trim() || 'action'
         try {
             const recs = await getRecommendations(vibe)
             if (recs.length === 0) {
                 await safeSendMessage(handler, channelId, `No anime found for "${vibe}". Try a different genre.`)
-                return
-            }
+        return
+    }
             let msg = `🎯 Top ${recs.length} "${vibe}" anime\n\n`
             for (const rec of recs) {
                 msg += `• ${rec.title} — eps: ${rec.episodes ?? '?'} — score: ${rec.score ?? '?'}\n${rec.siteUrl}\n\n`
@@ -277,23 +280,24 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         }
     })
 
-    bot.onSlashCommand('quote', async (handler, { channelId, args }) => {
-        console.log(`[SLASH] /quote args="${args.join(' ')}"`)
+    bot.onSlashCommand('quote', async (handler, event) => {
+        const { channelId, args } = event
+        console.log(`[SLASH] /quote args="${(args || []).join(' ')}"`)
         const quote = ANIME_QUOTES[Math.floor(Math.random() * ANIME_QUOTES.length)]
         await safeSendMessage(handler, channelId, `💬 "${quote.quote}" — ${quote.character}`)
     })
 
-    bot.onSlashCommand('guess-anime', async (handler, { channelId, userId, spaceId, args }) => {
-        console.log(`[SLASH] /guess-anime args="${args.join(' ')}"`)
+    // Main handler for guess_anime (snake_case)
+    const guessAnimeHandler = async (handler: any, { channelId, userId, spaceId, args }: any) => {
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
             await safeSendMessage(handler, channelId, '❌ Admin only.')
-            return
-        }
+        return
+    }
         if (activeTriviaGames.has(channelId)) {
             await safeSendMessage(handler, channelId, '❌ Game already active. Wait for it to finish.')
-            return
-        }
+        return
+    }
         const question = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)]
         await safeSendMessage(handler, channelId, `**🎮 Guess the Anime**\n\n${question.clue}\n\n*60 seconds to answer!*`)
         const timeoutId = setTimeout(async () => {
@@ -317,26 +321,41 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             hasWinner: false,
             timeoutId,
         })
+    }
+
+    bot.onSlashCommand('guess_anime', async (handler, event) => {
+        console.log(`[SLASH] /guess_anime args="${(event.args || []).join(' ')}"`)
+        await guessAnimeHandler(handler, event)
     })
 
-    bot.onSlashCommand('news', async (handler, { channelId, args }) => {
-        console.log(`[SLASH] /news args="${args.join(' ')}"`)
+    // Backward compatibility: deprecated guess-anime alias
+    bot.onSlashCommand('guess-anime', async (handler, event) => {
+        console.log(`[SLASH] deprecated alias guess-anime -> guess_anime`)
+        console.log(`[SLASH] /guess_anime args="${(event.args || []).join(' ')}"`)
+        await guessAnimeHandler(handler, event)
+    })
+
+    bot.onSlashCommand('news', async (handler, event) => {
+        const { channelId, args } = event
+        console.log(`[SLASH] /news args="${(args || []).join(' ')}"`)
         await safeSendMessage(handler, channelId, '📰 Anime news (coming soon).')
     })
 
-    bot.onSlashCommand('calendar', async (handler, { channelId, args }) => {
-        console.log(`[SLASH] /calendar args="${args.join(' ')}"`)
+    bot.onSlashCommand('calendar', async (handler, event) => {
+        const { channelId, args } = event
+        console.log(`[SLASH] /calendar args="${(args || []).join(' ')}"`)
         await safeSendMessage(handler, channelId, '🗓️ Weekly airing calendar (coming soon).')
     })
 
-    bot.onSlashCommand('ban', async (handler, { channelId, userId, spaceId, mentions, args }) => {
-        console.log(`[SLASH] /ban args="${args.join(' ')}"`)
+    bot.onSlashCommand('ban', async (handler, event) => {
+        const { channelId, userId, spaceId, mentions, args } = event
+        console.log(`[SLASH] /ban args="${(args || []).join(' ')}"`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
             await safeSendMessage(handler, channelId, '❌ Admin only.')
             return
         }
-        const userToBan = mentions[0]?.userId || args[0]
+        const userToBan = mentions[0]?.userId || (args || [])[0]
         if (!userToBan || !userToBan.startsWith('0x') || userToBan.length !== 42) {
             await safeSendMessage(handler, channelId, '❌ Usage: `/ban @user` or `/ban <userId>`')
             return
@@ -350,14 +369,15 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         }
     })
 
-    bot.onSlashCommand('mute', async (handler, { channelId, userId, spaceId, mentions, args }) => {
-        console.log(`[SLASH] /mute args="${args.join(' ')}"`)
+    bot.onSlashCommand('mute', async (handler, event) => {
+        const { channelId, userId, spaceId, mentions, args } = event
+        console.log(`[SLASH] /mute args="${(args || []).join(' ')}"`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
             await safeSendMessage(handler, channelId, '❌ Admin only.')
             return
         }
-        const userToMute = mentions[0]?.userId || args[0]
+        const userToMute = mentions[0]?.userId || (args || [])[0]
         if (!userToMute) {
             await safeSendMessage(handler, channelId, '❌ Usage: `/mute @user`')
             return
@@ -366,14 +386,15 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         await safeSendMessage(handler, channelId, `🔇 Muted <@${userToMute}>\nNote: Actual muting coming soon.`)
     })
 
-    bot.onSlashCommand('purge', async (handler, { channelId, userId, spaceId, args }) => {
-        console.log(`[SLASH] /purge args="${args.join(' ')}"`)
+    bot.onSlashCommand('purge', async (handler, event) => {
+        const { channelId, userId, spaceId, args } = event
+        console.log(`[SLASH] /purge args="${(args || []).join(' ')}"`)
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
             await safeSendMessage(handler, channelId, '❌ Admin only.')
             return
         }
-        const count = parseInt(args[0])
+        const count = parseInt((args || [])[0])
         if (isNaN(count) || count < 1 || count > 100) {
             await safeSendMessage(handler, channelId, '❌ Usage: `/purge 25` (1-100)')
             return
@@ -386,6 +407,10 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 // ============================================================================
 // BOT INITIALIZATION
 // ============================================================================
+
+// Log command names before registration
+const commandNames = commands.map(c => c.name).join(', ')
+console.log(`[START] registering slash commands: ${commandNames}`)
 
 makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands })
     .then((initializedBot) => {
@@ -401,9 +426,20 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
         webhookApp.post('/webhook/', jwtMiddleware, webhookHandler)
         
         setupBotHandlers(bot)
+        console.log('[START] registered OK')
         console.log('✅ Bot initialized successfully')
     })
     .catch((error) => {
+        // Check for command name validation errors
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        const invalidCommandMatch = errorMsg.match(/command.*?["']([^"']+)["']/i)
+        
+        if (invalidCommandMatch) {
+            const offendingName = invalidCommandMatch[1]
+            console.error(`[START] command registration failed: invalid name "${offendingName}"`)
+            console.error(`[START] error: ${errorMsg}`)
+        }
+        
         // Suppress ConnectError - it's non-fatal
         const isConnectError = error instanceof Error && 
             (error.message?.includes('Connect') || 
@@ -412,9 +448,12 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
         
         if (isConnectError) {
             console.warn('⚠️ Connection warning (non-fatal, bot may still work)')
-        } else {
-            console.error('⚠️ Bot initialization error:', error instanceof Error ? error.message : String(error))
+        } else if (!invalidCommandMatch) {
+            console.error('⚠️ Bot initialization error:', errorMsg)
         }
+        
+        // Do NOT crash - keep server running so webhook still works
+        console.log('[START] continuing despite registration error (webhook may still work)')
     })
 
 // ============================================================================

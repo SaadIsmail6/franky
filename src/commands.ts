@@ -2,6 +2,7 @@ import type { PlainMessage, SlashCommand } from '@towns-protocol/proto'
 
 /**
  * Slash commands available in the Franky bot
+ * Command names must match /^[A-Za-z0-9_]+$/ (letters, numbers, underscores only)
  */
 const commands = [
     {
@@ -21,7 +22,7 @@ const commands = [
         description: 'Get a random anime quote',
     },
     {
-        name: 'guess-anime',
+        name: 'guess_anime',
         description: 'Play guess the anime game (admin only)',
     },
     {
@@ -45,5 +46,13 @@ const commands = [
         description: 'Delete multiple messages (admin only)',
     },
 ] as const satisfies PlainMessage<SlashCommand>[]
+
+// Validate all command names match /^[A-Za-z0-9_]+$/
+const COMMAND_NAME_REGEX = /^[A-Za-z0-9_]+$/
+for (const cmd of commands) {
+    if (!COMMAND_NAME_REGEX.test(cmd.name)) {
+        throw new Error(`Invalid command name "${cmd.name}": must match /^[A-Za-z0-9_]+$/`)
+    }
+}
 
 export default commands
