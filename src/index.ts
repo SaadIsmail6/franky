@@ -5,7 +5,7 @@ import { getAiringInfo, getRecommendations } from './anilist'
 
 /**
  * Franky - Towns Protocol Bot for Anime Communities
- * Webhook handler hands off directly to SDK without preprocessing
+ * Single Hono app with Bun.serve for deployment on Render
  */
 
 // ============================================================================
@@ -39,7 +39,7 @@ async function safeSendMessage(
     } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         console.error(`[SEND-ERROR]`, msg)
-        throw error // Re-throw so caller can handle if needed
+        throw error
     }
 }
 
@@ -127,20 +127,60 @@ const ANIME_QUOTES = [
 // ============================================================================
 
 let bot: Awaited<ReturnType<typeof makeTownsBot>> | null = null
-let jwtMiddleware: any = null
-let webhookHandler: any = null
-let webhookApp: Hono | null = null // Initialize ONCE after bot.start()
 const startTime = Date.now()
 
 // Parse APP_PRIVATE_DATA at startup to extract app_id (no secrets)
 let appId: string | null = null
 try {
-    const appJson = JSON.parse(process.env.APP_PRIVATE_DATA || "{}")
+    const appJson = JSON.parse(process.env.APP_PRIVATE_DATA || '{}')
     appId = appJson.app_id || null
 } catch {
     // If parsing fails, appId remains null
 }
-console.log("[START] app_id=", appId)
+
+// ============================================================================
+// ENVIRONMENT VALIDATION
+// ============================================================================
+
+if (!process.env.APP_PRIVATE_DATA || !process.env.JWT_SECRET) {
+    console.error('❌ FATAL: Missing required environment variables')
+    console.error('Required: APP_PRIVATE_DATA, JWT_SECRET')
+    console.error('Please set these environment variables before starting the bot.')
+    process.exit(1)
+}
+
+// Set default BASE_MAINNET_RPC_URL if not provided
+if (!process.env.BASE_MAINNET_RPC_URL) {
+    process.env.BASE_MAINNET_RPC_URL = 'https://mainnet.base.org'
+}
+
+// ============================================================================
+// HONO APP
+// ============================================================================
+
+const app = new Hono()
+
+// Health check route for Render
+app.get('/healthz', (c) => c.text('ok'))
+
+// Root route
+app.get('/', (c) => c.text('Franky is running ✅'))
+
+// Health route (JSON)
+app.get('/health', (c) => {
+    const uptime = Math.floor((Date.now() - startTime) / 1000)
+    return c.json({ ok: true, uptime, ts: new Date().toISOString() })
+})
+
+// Config route
+app.get('/config', (c) => {
+    const commandNames = commands.map(cmd => cmd.name)
+    return c.json({
+        app_id: appId,
+        has_jwt: Boolean(process.env.JWT_SECRET),
+        commands: commandNames,
+    })
+})
 
 // ============================================================================
 // BOT HANDLERS SETUP
@@ -213,8 +253,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             const isAdmin = await handler.hasAdminPermission(userId, spaceId)
             if (isAdmin) return
 
-            // Check redaction permission (4 = Redact, but SDK might expect different format)
-            // Try to check permission - if checkPermission fails, we'll still try to delete
+            // Check redaction permission (4 = Redact)
             let canRedact = false
             try {
                 // @ts-expect-error - Permission enum may not be exported, using numeric value
@@ -236,7 +275,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         console.log(`[SLASH] /help args="${(args || []).join(' ')}" channel=${channelId}`)
         await safeSendMessage(
             handler,
-        channelId,
+            channelId,
             'Franky — Commands\n\n' +
             '• /airing <title>\n' +
             '• /recommend <vibe>\n' +
@@ -283,8 +322,8 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             const recs = await getRecommendations(vibe)
             if (recs.length === 0) {
                 await safeSendMessage(handler, channelId, `No anime found for "${vibe}". Try a different genre.`)
-        return
-    }
+                return
+            }
             let msg = `🎯 Top ${recs.length} "${vibe}" anime\n\n`
             for (const rec of recs) {
                 msg += `• ${rec.title} — eps: ${rec.episodes ?? '?'} — score: ${rec.score ?? '?'}\n${rec.siteUrl}\n\n`
@@ -308,12 +347,12 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         const isAdmin = await handler.hasAdminPermission(userId, spaceId)
         if (!isAdmin) {
             await safeSendMessage(handler, channelId, '❌ Admin only.')
-        return
-    }
+            return
+        }
         if (activeTriviaGames.has(channelId)) {
             await safeSendMessage(handler, channelId, '❌ Game already active. Wait for it to finish.')
-        return
-    }
+            return
+        }
         const question = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)]
         await safeSendMessage(handler, channelId, `**🎮 Guess the Anime**\n\n${question.clue}\n\n*60 seconds to answer!*`)
         const timeoutId = setTimeout(async () => {
@@ -341,14 +380,6 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 
     bot.onSlashCommand('guess_anime', async (handler, event) => {
         const { channelId, args } = event
-        console.log(`[SLASH] /guess_anime args="${(args || []).join(' ')}" channel=${channelId}`)
-        await guessAnimeHandler(handler, event)
-    })
-
-    // Backward compatibility: deprecated guess-anime alias
-    bot.onSlashCommand('guess-anime', async (handler, event) => {
-        const { channelId, args } = event
-        console.log(`[SLASH] deprecated alias guess-anime -> guess_anime`)
         console.log(`[SLASH] /guess_anime args="${(args || []).join(' ')}" channel=${channelId}`)
         await guessAnimeHandler(handler, event)
     })
@@ -446,19 +477,18 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 // Log command names before registration
 const commandNames = commands.map(c => c.name).join(', ')
 console.log(`[START] registering slash commands: ${commandNames}`)
+if (appId) {
+    console.log(`[START] app_id=${appId}`)
+}
 
 makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands })
     .then((initializedBot) => {
         bot = initializedBot
-        const webhook = bot.start()
-        jwtMiddleware = webhook.jwtMiddleware
-        webhookHandler = webhook.handler
+        const { jwtMiddleware, handler } = bot.start()
         
-        // Initialize Hono webhook app ONCE (not per-request)
-        webhookApp = new Hono()
-        // Register both /webhook and /webhook/ to handle trailing slash
-        webhookApp.post('/webhook', jwtMiddleware, webhookHandler)
-        webhookApp.post('/webhook/', jwtMiddleware, webhookHandler)
+        // Register webhook routes with Hono middleware
+        app.post('/webhook', jwtMiddleware, handler)
+        app.post('/webhook/', jwtMiddleware, handler)
         
         setupBotHandlers(bot)
         console.log('[START] registered OK')
@@ -492,18 +522,7 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands 
     })
 
 // ============================================================================
-// ENVIRONMENT VALIDATION - Exit if missing required vars
-// ============================================================================
-
-if (!process.env.APP_PRIVATE_DATA || !process.env.JWT_SECRET) {
-    console.error('❌ FATAL: Missing required environment variables')
-    console.error('Required: APP_PRIVATE_DATA, JWT_SECRET')
-    console.error('Please set these environment variables before starting the bot.')
-    process.exit(1)
-}
-
-// ============================================================================
-// SERVER - Bun.serve with bulletproof webhook handler
+// SERVER - Single Bun.serve instance
 // ============================================================================
 
 // Guard against double initialization
@@ -520,115 +539,20 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
     const port = Number(process.env.PORT || 3000)
 
     Bun.serve({
-    hostname: '0.0.0.0',
-    port,
-    fetch: async (req: Request) => {
-        const url = new URL(req.url)
-        const path = url.pathname
-        const method = req.method
-        
-        // Log every request
-        console.log(`[REQ] ${method} ${path}`)
-
-        // GET /
-        if (method === 'GET' && path === '/') {
-            return new Response('Franky is running ✅', { status: 200 })
-        }
-
-        // GET /health
-        if (method === 'GET' && path === '/health') {
-            const uptime = Math.floor((Date.now() - startTime) / 1000)
-            return new Response(JSON.stringify({ ok: true, uptime, ts: new Date().toISOString() }), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-            })
-        }
-
-        // GET /config
-        if (method === 'GET' && path === '/config') {
-            const commandNames = commands.map(c => c.name)
-            return new Response(JSON.stringify({
-                app_id: appId,
-                has_jwt: Boolean(process.env.JWT_SECRET),
-                commands: commandNames,
-            }), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-            })
-        }
-
-        // POST /webhook or POST /webhook/ - handle webhook requests
-        if (path === '/webhook' || path === '/webhook/') {
-            // Safe mode: immediately return 200 without calling SDK
-            if (process.env.WEBHOOK_ALWAYS_200 === 'true') {
-                console.log('[SAFE MODE] Returning 200 without SDK call')
-                console.log('[WEBHOOK] 200')
-                return new Response('OK', { status: 200 })
-            }
-
-            // Only POST is allowed on /webhook paths
-            if (method !== 'POST') {
-                return new Response('Method not allowed', { status: 405 })
-            }
-
-            // Check if webhook app is ready (never return 503 to Towns)
-            if (!webhookApp) {
-                console.log('[WEBHOOK] Bot still initializing, returning 200')
-                if (process.env.FRANKY_DEBUG === 'true') {
-                    console.log('[WEBHOOK] 200 handled (initializing)')
-                }
-                return new Response('OK: initializing', { status: 200 })
-            }
-
-            // Call pre-initialized Hono webhook app (don't pre-read req.body)
-            try {
-                const res = await webhookApp.fetch(req)
-                
-                // Ensure we return a Response object
-                if (!(res instanceof Response)) {
-                    console.log('[WEBHOOK] 200 (wrapped non-Response)')
-                    if (process.env.FRANKY_DEBUG === 'true') {
-                        console.log('[WEBHOOK] 200 handled (non-Response wrapped)')
-                    }
-                    return new Response('OK', { status: 200 })
-                }
-                
-                // Check SDK response status
-                const status = res.status || 200
-                console.log(`[WEBHOOK] ${status}`)
-                
-                // Towns requires HTTP 200 OK - return SDK response if 200, otherwise normalize to 200
-                if (status === 200) {
-                    // Debug logging if enabled
-                    if (process.env.FRANKY_DEBUG === 'true') {
-                        console.log('[WEBHOOK] 200 handled')
-                    }
-                    return res
-                }
-                
-                // SDK returned non-200 - log warning and return 200 OK (Towns requirement)
-                console.warn(`[WEBHOOK] Warning: SDK returned ${status}, normalizing to 200 OK`)
-                if (process.env.FRANKY_DEBUG === 'true') {
-                    console.log('[WEBHOOK] 200 handled (normalized)')
-                }
-                return new Response('OK', { status: 200 })
-            } catch (error) {
-                // Fatal error - log with stack trace and return 500
-                console.error('[WEBHOOK ERROR]', error)
-                if (error instanceof Error && error.stack) {
-                    console.error('[WEBHOOK ERROR] Stack trace:', error.stack)
-                }
-                console.log('[WEBHOOK] 500')
-                return new Response('Webhook failed', { status: 500 })
-            }
-        }
-
-        // 404 for all other routes
-        return new Response('Not found', { status: 404 })
-    },
+        hostname: '0.0.0.0',
+        port,
+        fetch: async (req: Request) => {
+            // Log every request
+            const url = new URL(req.url)
+            console.log(`[REQ] ${req.method} ${url.pathname}`)
+            
+            // Delegate to Hono app
+            return app.fetch(req)
+        },
     })
 
     console.log(`Listening on :${port}`)
+    console.log('==> Your service is live 🎉')
 }
 
 export {}
