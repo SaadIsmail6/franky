@@ -47,47 +47,51 @@ export async function registerSlashCommandsPortable(
         return
     }
 
-    console.log(
-        '[REGISTRY] attempting strategies: registerSlashCommands | registerCommands | app.updateAppMetadata'
-    )
-
     const strategies: Array<{
         label: string
+        available: boolean
         attempt: () => Promise<void>
     }> = [
         {
             label: 'registerSlashCommands',
+            available: typeof bot?.registerSlashCommands === 'function',
             attempt: async () => {
-                if (typeof bot?.registerSlashCommands !== 'function') {
-                    throw new Error('registerSlashCommands not available on bot')
-                }
                 await bot.registerSlashCommands(payload)
             },
         },
         {
             label: 'registerCommands',
+            available: typeof bot?.registerCommands === 'function',
             attempt: async () => {
-                if (typeof bot?.registerCommands !== 'function') {
-                    throw new Error('registerCommands not available on bot')
-                }
                 await bot.registerCommands(payload)
             },
         },
         {
             label: 'app.updateAppMetadata',
+            available: typeof bot?.app?.updateAppMetadata === 'function',
             attempt: async () => {
-                if (typeof bot?.app?.updateAppMetadata !== 'function') {
-                    throw new Error('app.updateAppMetadata not available on bot')
-                }
                 await bot.app.updateAppMetadata({ slashCommands: payload })
             },
         },
     ]
 
+    const availableStrategies = strategies.filter((strategy) => strategy.available)
+
+    if (availableStrategies.length === 0) {
+        console.warn('[REGISTRY] no registration APIs available on bot – skipping registration step')
+        return
+    }
+
+    console.log(
+        `[REGISTRY] attempting strategies: ${availableStrategies
+            .map((strategy) => strategy.label)
+            .join(' | ')}`
+    )
+
     let lastError: unknown = null
 
     for (let attemptIndex = 0; attemptIndex <= BACKOFF_DELAYS_MS.length; attemptIndex += 1) {
-        for (const strategy of strategies) {
+        for (const strategy of availableStrategies) {
             try {
                 await strategy.attempt()
                 console.log(
