@@ -349,17 +349,59 @@ console.log('[START] loading commands from commands.ts')
 makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands: commandMetadata })
     .then(async (initializedBot) => {
         bot = initializedBot
+        console.log('[DEBUG] bot keys:', Object.keys(bot ?? {}))
+        const botApp = (bot as unknown as { app?: Record<string, unknown> })?.app
+        if (botApp) {
+            console.log('[DEBUG] bot.app keys:', Object.keys(botApp))
+        }
+
+        setupBotHandlers(bot)
+
         const webhook = bot.start()
         jwtMiddleware = webhook.jwtMiddleware
         webhookHandler = webhook.handler
+        console.log(
+            '[DEBUG] webhook keys:',
+            Object.keys(webhook ?? {}),
+            'handlerType=',
+            typeof webhookHandler,
+            'jwtType=',
+            typeof jwtMiddleware
+        )
         
         // Initialize Hono webhook app ONCE (not per-request)
         webhookApp = new Hono()
+        webhookApp.use(async (c, next) => {
+            console.log('[WEBHOOK-PATH]', c.req.method, c.req.path)
+            await next()
+        })
         // Register both /webhook and /webhook/ to handle trailing slash
-        webhookApp.post('/webhook', jwtMiddleware, webhookHandler)
-        webhookApp.post('/webhook/', jwtMiddleware, webhookHandler)
+        webhookApp.post('/webhook', async (c) => {
+            if (!jwtMiddleware || !webhookHandler) {
+                console.warn('[WEBHOOK] handler not ready, returning fallback 200')
+                return c.text('OK', 200)
+            }
+            let response: Response | undefined
+            try {
+                await jwtMiddleware(c, async () => {
+                    const handled = await webhookHandler(c)
+                    if (handled instanceof Response) {
+                        response = handled
+                    }
+                })
+            } catch (error) {
+                console.error('[WEBHOOK ERROR]', error)
+                if (error instanceof Error && error.stack) {
+                    console.error('[WEBHOOK ERROR] Stack trace:', error.stack)
+                }
+                return c.text('Webhook failed', 500)
+            }
+            if (!response) {
+                return c.text('OK', 200)
+            }
+            return response
+        })
         
-        setupBotHandlers(bot)
         console.log('✅ Bot initialized successfully')
         const namesToRegister = validCommandNames
         if (namesToRegister.length === 0) {
@@ -471,7 +513,11 @@ if (globalThis.__FRANKY_SERVER_STARTED) {
 
             // Call pre-initialized Hono webhook app (don't pre-read req.body)
             try {
-                const res = await webhookApp.fetch(req)
+                const targetReq =
+                    path === '/webhook/'
+                        ? new Request(new URL('/webhook', url).toString(), req)
+                        : req
+                const res = await webhookApp.fetch(targetReq)
                 
                 // Ensure we return a Response object
                 if (!(res instanceof Response)) {
