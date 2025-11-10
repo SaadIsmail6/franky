@@ -40,11 +40,11 @@ export async function registerSlashCommandsPortable(
     bot: any,
     names: string[],
     describe: (name: string) => { name: string; description: string }
-): Promise<void> {
+): Promise<'registered' | 'skipped'> {
     const payload = names.map((name) => describe(name))
     if (payload.length === 0) {
         console.warn('[REGISTRY] no slash commands to register (empty payload)')
-        return
+        return 'skipped'
     }
 
     const strategies: Array<{
@@ -79,7 +79,7 @@ export async function registerSlashCommandsPortable(
 
     if (availableStrategies.length === 0) {
         console.warn('[REGISTRY] no registration APIs available on bot – skipping registration step')
-        return
+        return 'skipped'
     }
 
     console.log(
@@ -97,7 +97,7 @@ export async function registerSlashCommandsPortable(
                 console.log(
                     `[REGISTRY] registered OK with ${strategy.label} names=${names.join(', ')}`
                 )
-                return
+                return 'registered'
             } catch (error) {
                 lastError = error
                 logStrategyFailure(strategy.label, error, names)

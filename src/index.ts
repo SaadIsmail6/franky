@@ -82,6 +82,7 @@ let jwtMiddleware: any = null
 let webhookHandler: any = null
 let webhookApp: Hono | null = null // Initialize ONCE after bot.start()
 const startTime = Date.now()
+let slashRegistrationStatus: 'unknown' | 'registered' | 'skipped' = 'unknown'
 
 // ============================================================================
 // BOT HANDLERS SETUP
@@ -147,8 +148,12 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         handler: BotHandler,
         event: TextCommandEvent
     ): Promise<boolean> => {
-        if (isLikelySlashCommandEvent(event)) {
+        const slashTagged = isLikelySlashCommandEvent(event)
+        if (slashRegistrationStatus === 'registered' && slashTagged) {
             return false
+        }
+        if (slashTagged && slashRegistrationStatus !== 'registered') {
+            console.log('[TEXTCMD] handling slash-tagged message via compatibility mode')
         }
         const trimmed = event.message.trim()
         if (!trimmed.startsWith('/')) {
@@ -359,13 +364,22 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands:
         const namesToRegister = validCommandNames
         if (namesToRegister.length === 0) {
             console.warn('[REGISTRY] no valid slash command names to register')
+            slashRegistrationStatus = 'skipped'
             return
         }
         try {
             console.log('[START] registering slash commands:', namesToRegister.join(', '))
-            await registerSlashCommandsPortable(bot, namesToRegister, describeCommand)
+            const result = await registerSlashCommandsPortable(bot, namesToRegister, describeCommand)
+            slashRegistrationStatus = result
+            if (result === 'skipped') {
+                console.log('[REGISTRY] running in text-command compatibility mode (slash registration skipped)')
+            } else {
+                console.log('[REGISTRY] slash commands registered; compatibility mode on standby')
+            }
         } catch (error) {
             console.error('[REGISTRY] failed', error)
+            slashRegistrationStatus = 'skipped'
+            console.log('[REGISTRY] falling back to text-command compatibility mode')
         }
     })
     .catch((error) => {
