@@ -9,6 +9,25 @@ import {
     type SlashCommandEventPayload,
 } from './commands'
 
+const SLASH_COMMAND_NAME_REGEX = /^[A-Za-z0-9_]+$/
+const EXPECTED_SLASH_COMMAND_NAMES = [
+    'help',
+    'airing',
+    'recommend',
+    'quote',
+    'guess_anime',
+    'news',
+    'calendar',
+    'ban',
+    'mute',
+    'purge',
+    'ping',
+    'diag',
+] as const
+const SLASH_ALIAS_MAP: Record<string, string> = {
+    'guess-anime': 'guess_anime',
+}
+
 /**
  * Franky - Towns Protocol Bot for Anime Communities
  * Webhook handler hands off directly to SDK without preprocessing
@@ -53,7 +72,30 @@ let jwtMiddleware: any = null
 let webhookHandler: any = null
 let webhookApp: Hono | null = null // Initialize ONCE after bot.start()
 const startTime = Date.now()
-const commandMetadata = commands.map(({ name, description }) => ({ name, description })) as PlainMessage<SlashCommand>[]
+const commandDefinitionMap = new Map(commands.map((definition) => [definition.name, definition]))
+const invalidCommandDefinitions = commands.filter((definition) => !SLASH_COMMAND_NAME_REGEX.test(definition.name))
+if (invalidCommandDefinitions.length > 0) {
+    const invalidNames = invalidCommandDefinitions.map((definition) => definition.name).join(', ')
+    console.error('[START] invalid slash command names:', invalidNames)
+}
+const validCommandDefinitions = commands.filter((definition) => SLASH_COMMAND_NAME_REGEX.test(definition.name))
+const unexpectedCommandDefinitions = validCommandDefinitions
+    .map((definition) => definition.name)
+    .filter((name) => !EXPECTED_SLASH_COMMAND_NAMES.includes(name as typeof EXPECTED_SLASH_COMMAND_NAMES[number]))
+if (unexpectedCommandDefinitions.length > 0) {
+    console.warn('[START] unexpected slash command definitions:', unexpectedCommandDefinitions.join(', '))
+}
+const commandMetadata = EXPECTED_SLASH_COMMAND_NAMES.flatMap((name) => {
+    const definition = commandDefinitionMap.get(name)
+    if (!definition) {
+        console.error(`[START] missing slash command definition for "${name}"`)
+        return []
+    }
+    if (!SLASH_COMMAND_NAME_REGEX.test(definition.name)) {
+        return []
+    }
+    return [{ name: definition.name, description: definition.description }] as PlainMessage<SlashCommand>[]
+})
 
 // ============================================================================
 // BOT HANDLERS SETUP
@@ -150,25 +192,50 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
     })
     
     const commandMap = new Map<string, CommandDefinition>(
-        commands.map((definition) => [definition.name, definition])
+        validCommandDefinitions.map((definition) => [definition.name, definition])
     )
+    const aliasLog = new Set<string>()
+
+    const invokeCommand = async (
+        canonicalName: string,
+        handler: BotHandler,
+        event: SlashCommandEventPayload,
+        incomingName: string
+    ) => {
+        const definition = commandMap.get(canonicalName)
+        if (!definition) {
+            console.error(`[COMMAND ERROR] missing definition for /${canonicalName}`)
+            return
+        }
+        const argsJoined = event.args.join(' ')
+        console.log(`[SLASH] /${incomingName} args="${argsJoined}"`)
+        console.log(`[RUN] /${definition.name} executed by ${event.userId}`)
+        try {
+            await definition.execute({
+                handler,
+                event: { ...event, command: definition.name },
+                safeSendMessage,
+                bot,
+                startTime,
+            })
+        } catch (error) {
+            console.error(`[COMMAND ERROR] /${definition.name}`, error)
+        }
+    }
 
     for (const definition of commandMap.values()) {
         bot.onSlashCommand(definition.name as typeof definition.name, async (handler, event) => {
-            const argsJoined = event.args.join(' ')
-            console.log(`[SLASH] /${event.command} args="${argsJoined}"`)
-            console.log(`[RUN] /${definition.name} executed by ${event.userId}`)
-            try {
-                await definition.execute({
-                    handler,
-                    event: event as SlashCommandEventPayload,
-                    safeSendMessage,
-                    bot,
-                    startTime,
-                })
-            } catch (error) {
-                console.error(`[COMMAND ERROR] /${definition.name}`, error)
+            await invokeCommand(definition.name, handler, event as SlashCommandEventPayload, event.command)
+        })
+    }
+
+    for (const [alias, canonical] of Object.entries(SLASH_ALIAS_MAP)) {
+        bot.onSlashCommand(alias as typeof alias, async (handler, event) => {
+            if (!aliasLog.has(alias)) {
+                console.log(`[SLASH] deprecated alias ${alias} -> ${canonical}`)
+                aliasLog.add(alias)
             }
+            await invokeCommand(canonical, handler, event as SlashCommandEventPayload, event.command)
         })
     }
 }
@@ -196,8 +263,57 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands:
         const maybeRegister = (bot as unknown as {
             registerSlashCommands?: (cmds: PlainMessage<SlashCommand>[]) => Promise<void>
         }).registerSlashCommands
-        if (typeof maybeRegister === 'function') {
-            await maybeRegister(commandMetadata)
+        const registrationNames = commandMetadata.map((metadata) => metadata.name)
+        const missingRegistrationNames = EXPECTED_SLASH_COMMAND_NAMES.filter(
+            (name) => !registrationNames.includes(name)
+        )
+        if (missingRegistrationNames.length > 0) {
+            console.error(
+                '[START] missing slash command metadata for:',
+                missingRegistrationNames.join(', ')
+            )
+        }
+        if (typeof maybeRegister === 'function' && commandMetadata.length > 0) {
+            console.log('[START] registering slash commands:', registrationNames.join(', '))
+            const backoffs = [200, 800, 2400]
+            let attempt = 0
+            while (attempt <= backoffs.length) {
+                try {
+                    await maybeRegister(commandMetadata)
+                    console.log('[START] registered OK')
+                    break
+                } catch (error) {
+                    const isConnectError =
+                        error instanceof Error &&
+                        (error.constructor?.name === 'ConnectError' ||
+                            error.message?.includes('ConnectError'))
+                    const message = error instanceof Error ? error.message : String(error)
+                    if (isConnectError) {
+                        console.error(
+                            `[START] register attempt ${attempt + 1} failed (ConnectError) for:`,
+                            registrationNames.join(', '),
+                            message
+                        )
+                    } else {
+                        console.error(
+                            `[START] register attempt ${attempt + 1} failed for:`,
+                            registrationNames.join(', '),
+                            message
+                        )
+                    }
+                    if (attempt === backoffs.length) {
+                        console.error('[START] giving up on slash command registration')
+                        break
+                    }
+                    const delayMs = backoffs[attempt]
+                    await new Promise((resolve) => setTimeout(resolve, delayMs))
+                    attempt += 1
+                }
+            }
+        } else if (typeof maybeRegister !== 'function') {
+            console.warn('[START] registerSlashCommands method not available; skipping registration')
+        } else {
+            console.error('[START] no valid slash command metadata to register; skipping registration')
         }
         console.log('✅ Bot initialized successfully')
     })

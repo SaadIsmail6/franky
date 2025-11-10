@@ -121,7 +121,7 @@ export const commands: CommandDefinition[] = [
                     '• /airing <title>',
                     '• /recommend <vibe>',
                     '• /quote',
-                    '• /guess-anime',
+                    '• /guess_anime',
                     '• /news',
                     '• /calendar',
                     '• /ping',
@@ -192,7 +192,7 @@ export const commands: CommandDefinition[] = [
         },
     },
     {
-        name: 'guess-anime',
+        name: 'guess_anime',
         description: 'Start a guess-the-anime trivia game (admins only)',
         execute: async ({ handler, event, safeSendMessage, bot }) => {
             const isAdmin = await handler.hasAdminPermission(event.userId, event.spaceId)
