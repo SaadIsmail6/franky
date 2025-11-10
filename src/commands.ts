@@ -107,11 +107,36 @@ function formatETA(seconds: number): string {
     return minutes > 0 ? `~${minutes}m` : 'soon'
 }
 
+const COMMAND_DESCRIPTIONS: Record<string, string> = {
+    help: 'Show available commands',
+    airing: 'Check next airing episode for an anime',
+    recommend: 'Get anime recommendations for a vibe',
+    quote: 'Send a random anime quote',
+    guess_anime: 'Start a guess-the-anime trivia game (admins only)',
+    news: 'Show latest anime news (coming soon)',
+    calendar: 'Show anime airing calendar (coming soon)',
+    ban: 'Ban a user (admins only)',
+    mute: 'Mute a user (admins only)',
+    purge: 'Purge recent messages (admins only)',
+    ping: 'Check if Franky is responsive',
+    diag: 'Show diagnostic information',
+}
+
 export const commands: CommandDefinition[] = [
     {
         name: 'help',
         description: 'Show available commands',
         execute: async ({ handler, event, safeSendMessage }) => {
+            const target = event.args[0]?.toLowerCase()
+            if (target) {
+                const info = COMMAND_DESCRIPTIONS[target]
+                if (info) {
+                    await safeSendMessage(handler, event.channelId, `/${target} — ${info}`)
+                } else {
+                    await safeSendMessage(handler, event.channelId, `Unknown command "${target}". Try \`/help\`.`)
+                }
+                return
+            }
             await safeSendMessage(
                 handler,
                 event.channelId,
@@ -305,7 +330,7 @@ export const commands: CommandDefinition[] = [
         name: 'ping',
         description: 'Check if Franky is responsive',
         execute: async ({ handler, event, safeSendMessage }) => {
-            await safeSendMessage(handler, event.channelId, '🏓 Pong! Franky is online.')
+            await safeSendMessage(handler, event.channelId, 'pong')
         },
     },
     {
@@ -313,13 +338,7 @@ export const commands: CommandDefinition[] = [
         description: 'Show diagnostic information',
         execute: async ({ handler, event, safeSendMessage, startTime }) => {
             const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000)
-            const diagnostics = [
-                'Franky diagnostics',
-                `• Uptime: ${uptimeSeconds}s`,
-                `• Channel: ${event.channelId}`,
-                `• User: ${event.userId}`,
-                `• Args: ${event.args.join(' ') || '(none)'}`,
-            ].join('\n')
+            const diagnostics = `Franky diag — uptime=${uptimeSeconds}s channel=${event.channelId} user=${event.userId}`
             await safeSendMessage(handler, event.channelId, diagnostics)
         },
     },

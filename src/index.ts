@@ -112,13 +112,127 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         console.log(`Franky joined channel: ${channelId}`)
     })
 
-    bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned }) => {
+    const commandMap = new Map<string, CommandDefinition>(
+        commands.map((definition) => [definition.name, definition])
+    )
+    const adminCommands = new Set(['ban', 'mute', 'purge', 'guess_anime'])
+    const aliasLog = new Set<string>()
+
+    const isLikelySlashCommandEvent = (event: any): boolean => {
+        const tags = event?.tags
+        if (Array.isArray(tags)) {
+            return tags.some((tag) =>
+                tag?.messageInteractionType === 'SLASH_COMMAND' ||
+                tag?.messageInteractionType === 'MESSAGE_INTERACTION_TYPE_SLASH_COMMAND'
+            )
+        }
+        if (typeof event?.messageInteractionType === 'string') {
+            return event.messageInteractionType.toUpperCase?.() === 'SLASH_COMMAND'
+        }
+        return false
+    }
+
+    type TextCommandEvent = {
+        message: string
+        channelId: string
+        userId: string
+        spaceId: string
+        eventId: string
+        mentions: SlashCommandEventPayload['mentions']
+        replyId?: string
+        threadId?: string
+    }
+
+    const handleTextCommand = async (
+        handler: BotHandler,
+        event: TextCommandEvent
+    ): Promise<boolean> => {
+        if (isLikelySlashCommandEvent(event)) {
+            return false
+        }
+        const trimmed = event.message.trim()
+        if (!trimmed.startsWith('/')) {
+            return false
+        }
+        const withoutSlash = trimmed.slice(1)
+        if (withoutSlash.length === 0) {
+            return false
+        }
+        const parts = withoutSlash.split(/\s+/)
+        const rawCommand = parts.shift()
+        if (!rawCommand) {
+            return false
+        }
+        const normalized = rawCommand.toLowerCase().replace(/-/g, '_')
+        const command = commandMap.get(normalized)
+        if (!command) {
+            return false
+        }
+
+        const args = parts
+        const argsJoined = args.join(' ')
+        console.log(`[TEXTCMD] /${normalized} args="${argsJoined}"`)
+
+        if (adminCommands.has(normalized)) {
+            const hasPermission = await handler.hasAdminPermission(event.userId, event.spaceId)
+            if (!hasPermission) {
+                console.log(`[TEXTCMD] denied /${normalized} user=${event.userId}`)
+                await safeSendMessage(
+                    handler,
+                    event.channelId,
+                    `You don't have permission for /${normalized}`
+                )
+                return true
+            }
+        }
+
+        const commandEvent: SlashCommandEventPayload = {
+            channelId: event.channelId,
+            userId: event.userId,
+            spaceId: event.spaceId,
+            eventId: event.eventId,
+            command: normalized,
+            args,
+            mentions: event.mentions,
+            replyId: event.replyId,
+            threadId: event.threadId,
+        }
+
+        try {
+            await command.execute({
+                handler,
+                event: commandEvent,
+                safeSendMessage,
+                bot,
+                startTime,
+            })
+        } catch (error) {
+            console.error(`[COMMAND ERROR] /${normalized}`, error)
+        }
+        return true
+    }
+
+    bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned, mentions, replyId, threadId }) => {
         // Log event summary
         const textPreview = truncateText(message)
         console.log(`[EVENT] type=message channel=${channelId || ''} author=${userId || ''} text=${textPreview}`)
 
         // Ignore self-messages
         if (userId === bot!.botId) return
+
+        const textCmdHandled = await handleTextCommand(handler, {
+            message,
+            channelId,
+            userId,
+            spaceId,
+            eventId,
+            mentions,
+            replyId,
+            threadId,
+        })
+        if (textCmdHandled) {
+            return
+        }
 
         // Trivia check
         const game = activeTriviaGames.get(channelId)
@@ -177,11 +291,6 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         }
     })
     
-    const commandMap = new Map<string, CommandDefinition>(
-        commands.map((definition) => [definition.name, definition])
-    )
-    const aliasLog = new Set<string>()
-
     const invokeCommand = async (
         canonicalName: string,
         handler: BotHandler,
