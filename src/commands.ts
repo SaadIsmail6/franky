@@ -138,21 +138,6 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
     whoami: 'Show bot identity information',
 }
 
-const HELP_EXAMPLES: Record<string, string[]> = {
-    airing: ['/airing', '/airing today', '/airing one piece'],
-    calendar: ['/calendar'],
-    recommend: ['/recommend shonen'],
-    quote: ['/quote'],
-    guess_anime: ['/guess_anime'],
-    ping: ['/ping'],
-    diag: ['/diag'],
-    whoami: ['/whoami'],
-    news: ['/news'],
-    ban: ['/ban @user'],
-    mute: ['/mute @user 10m'],
-    purge: ['/purge 25'],
-}
-
 const DEFAULT_TZ = process.env.FRANKY_TZ || 'America/Toronto'
 
 type ForcedAiringOptions = {
@@ -268,18 +253,27 @@ async function runAiringCommand(
     console.log(`[AIRING] mode=${mode} query="${titleQuery || ''}" count=${items.length}`)
 
     if (items.length === 0) {
-        const note = overrides.note ? `${overrides.note}\n\n` : ''
-        await safeSendMessage(handler, event.channelId, `${note}No upcoming episodes found.`.trim())
+        const baseMessage = 'No upcoming episodes found.'
+        const outputMessage = overrides.note ? `${overrides.note}\n\n${baseMessage}` : baseMessage
+        await safeSendMessage(handler, event.channelId, outputMessage)
+        console.log(`[AIRING] reply chars=${outputMessage.length} items=0`)
         return
     }
 
+    const limit = 5
     const message = formatAiringList(items, {
-        limit: 5,
+        limit,
         tz,
         header,
+        groupByDay: mode === 'week' || mode === 'today',
     })
-    const output = overrides.note ? `${overrides.note}\n\n${message}` : message
-    await safeSendMessage(handler, event.channelId, output.trim())
+
+    const finalMessage = overrides.note ? `${overrides.note}\n\n${message}` : message
+    await safeSendMessage(handler, event.channelId, finalMessage)
+    console.log(`[AIRING] reply chars=${finalMessage.length} items=${Math.min(items.length, limit)}`)
+    if (finalMessage.includes('…and more')) {
+        console.log('[AIRING] truncated output to fit')
+    }
 }
 
 export const commands: CommandDefinition[] = [
@@ -290,52 +284,105 @@ export const commands: CommandDefinition[] = [
             const target = event.args[0]?.toLowerCase()
             const commandNames = new Set(commands.map((command) => command.name))
 
+            const sections: Array<{
+                key: string
+                label: string
+                example?: string
+                requires?: string[]
+                customCondition?: boolean
+            }> = [
+                {
+                    key: 'airing',
+                    label: '/airing — Anime airings (now/today/week or by title)',
+                    example: '  e.g. /airing, /airing week, /airing one piece',
+                },
+                {
+                    key: 'calendar',
+                    label: '/calendar — Alias of /airing week',
+                    example: '  e.g. /calendar',
+                },
+                {
+                    key: 'recommend',
+                    label: '/recommend — Get anime recs',
+                    example: '  e.g. /recommend shonen',
+                },
+                {
+                    key: 'quote',
+                    label: '/quote — Random anime quote',
+                    example: '  e.g. /quote',
+                },
+                {
+                    key: 'guess_anime',
+                    label: '/guess_anime — Guess-the-anime game',
+                    example: '  e.g. /guess_anime',
+                },
+                {
+                    key: 'ping',
+                    label: '/ping — Bot check',
+                    example: '  e.g. /ping',
+                },
+                {
+                    key: 'diag',
+                    label: '/diag — Bot status',
+                    example: '  e.g. /diag',
+                },
+                {
+                    key: 'whoami',
+                    label: '/whoami — Bot identity info',
+                    example: '  e.g. /whoami',
+                },
+                {
+                    key: 'news',
+                    label: '/news — Show latest anime news (coming soon)',
+                    example: '  e.g. /news',
+                },
+                {
+                    key: 'admin',
+                    label: 'Admin: /ban, /mute, /purge (restricted)',
+                    example: '  e.g. /ban @user, /mute @user 10m, /purge 50',
+                    requires: ['ban', 'mute', 'purge'],
+                },
+            ]
+
             if (target) {
-                const info = COMMAND_DESCRIPTIONS[target]
-                if (info && commandNames.has(target)) {
-                    const exampleLine = HELP_EXAMPLES[target]?.length
-                        ? `\n  • ${HELP_EXAMPLES[target]!.join(', ')}`
-                        : ''
-                    await safeSendMessage(handler, event.channelId, `/${target} — ${info}${exampleLine}`)
-                } else {
-                    await safeSendMessage(handler, event.channelId, `Unknown command "${target}". Try \`/help\`.`)
+                const section = sections.find((section) => section.key === target)
+                if (section) {
+                    const requiredCommands = section.requires ?? [section.key]
+                    const available = requiredCommands.every((name) => commandNames.has(name))
+                    if (available) {
+                        const lines: string[] = [section.label]
+                        if (section.example) {
+                            lines.push(section.example)
+                        }
+                        await safeSendMessage(handler, event.channelId, lines.join('\n'))
+                        return
+                    }
                 }
+                await safeSendMessage(handler, event.channelId, `Unknown command "${target}". Try \`/help\`.`)
                 return
             }
 
-            const sections: Array<{ name: string; isAdmin?: boolean }> = [
-                { name: 'airing' },
-                { name: 'calendar' },
-                { name: 'recommend' },
-                { name: 'quote' },
-                { name: 'guess_anime' },
-                { name: 'ping' },
-                { name: 'diag' },
-                { name: 'whoami' },
-                { name: 'news' },
-                { name: 'ban', isAdmin: true },
-                { name: 'mute', isAdmin: true },
-                { name: 'purge', isAdmin: true },
-            ]
+            const lines: string[] = ['🤖 Franky Commands', '']
 
-            const lines: string[] = ['🤖 Franky Commands']
             for (const section of sections) {
-                if (!commandNames.has(section.name)) {
-                    continue
+                const requiredCommands = section.requires ?? [section.key]
+                const available = requiredCommands.every((name) => commandNames.has(name))
+                if (!available) continue
+                lines.push(section.label)
+                if (section.example) {
+                    lines.push(section.example)
                 }
-                const description = COMMAND_DESCRIPTIONS[section.name] ?? 'Command'
-                const header = section.isAdmin ? `(Admin) /${section.name}` : `/${section.name}`
-                lines.push(`${header} — ${description}`)
-                const examples = HELP_EXAMPLES[section.name]
-                if (examples?.length) {
-                    lines.push(`  • ${examples.join(', ')}`)
-                }
+                lines.push('')
             }
-            lines.push('')
-            lines.push('Tip: Type commands as messages that start with "/". No menu required.')
 
-            const helpText = lines.join('\n')
-            await safeSendMessage(handler, event.channelId, helpText.slice(0, 900))
+            if (lines[lines.length - 1] === '') {
+                lines.pop()
+            }
+
+            lines.push('', 'Tip: Type commands as messages that start with "/".')
+
+            const helpText = lines.join('\n').slice(0, 900)
+            await safeSendMessage(handler, event.channelId, helpText)
         },
     },
     {

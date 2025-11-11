@@ -1,3 +1,5 @@
+import { bulletList, relTime, truncate } from '../utils/format'
+
 const CACHE_TTL_MS = 90_000
 
 type CacheKind = 'general' | 'search'
@@ -143,73 +145,115 @@ export async function fetchUpcomingAiring(opts: { query?: string; page?: number;
     return items
 }
 
-function formatRelative(targetMs: number, nowMs: number): string {
-    const diffMs = targetMs - nowMs
-    if (diffMs <= -3600_000) {
-        return 'started'
-    }
-    if (diffMs <= 0) {
-        return 'now'
-    }
-    const totalMinutes = Math.round(diffMs / 60000)
-    if (totalMinutes < 60) {
-        return `in ${totalMinutes}m`
-    }
-    const totalHours = Math.floor(totalMinutes / 60)
-    const remainingMinutes = totalMinutes % 60
-    if (totalHours < 24) {
-        return remainingMinutes > 0 ? `in ${totalHours}h ${remainingMinutes}m` : `in ${totalHours}h`
-    }
-    const totalDays = Math.floor(totalHours / 24)
-    const remainingHours = totalHours % 24
-    if (remainingHours === 0) {
-        return `in ${totalDays}d`
-    }
-    return `in ${totalDays}d ${remainingHours}h`
+type FormatAiringListOptions = {
+    limit?: number
+    tz?: string
+    header?: string
+    groupByDay?: boolean
+    maxChars?: number
 }
 
-export function formatAiringList(
-    items: AiringItem[],
-    opts: { limit?: number; tz?: string; header?: string } = {}
+function createFormatter(locale: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+    try {
+        return new Intl.DateTimeFormat(locale, options)
+    } catch {
+        const { timeZone, ...rest } = options
+        return new Intl.DateTimeFormat(locale, rest)
+    }
+}
+
+function buildBulletLine(
+    item: AiringItem,
+    date: Date,
+    timeFormatter: Intl.DateTimeFormat,
+    nowMs: number
 ): string {
-    const { limit = 5, tz = 'UTC', header } = opts
-    const lines: string[] = []
-    if (header) {
-        lines.push(header)
-    }
+    const title = truncate(item.title, 40)
+    const timeLabel = timeFormatter.format(date)
+    const relative = relTime(item.airingAt, nowMs)
+    return `• ${title} — Ep ${item.episode}\n  🕒 ${timeLabel} (${relative})`
+}
 
-    const formatter = (() => {
-        try {
-            return new Intl.DateTimeFormat(undefined, {
-                dateStyle: 'medium',
-                timeStyle: 'short',
-                timeZone: tz,
-            })
-        } catch {
-            return new Intl.DateTimeFormat(undefined, {
-                dateStyle: 'medium',
-                timeStyle: 'short',
-            })
-        }
-    })()
-
-    const nowMs = Date.now()
-    const toShow = items.slice(0, limit)
-
-    for (const item of toShow) {
-        const airingDate = new Date(item.airingAt * 1000)
-        const formattedDate = formatter.format(airingDate)
-        const relative = formatRelative(airingDate.getTime(), nowMs)
-        lines.push(`• ${item.title} — Ep ${item.episode} at ${formattedDate} (${relative})`)
-    }
+export function formatAiringList(items: AiringItem[], opts: FormatAiringListOptions = {}): string {
+    const { limit = 5, tz = 'UTC', header, groupByDay = false, maxChars = 900 } = opts
 
     if (items.length === 0) {
-        lines.push('No upcoming episodes found.')
-    } else if (items.length > limit) {
-        lines.push('…and more')
+        return 'No upcoming episodes found.'
     }
 
-    return lines.join('\n')
-}
+    const selected = items.slice(0, limit)
+    const nowMs = Date.now()
 
+    const timeFormatter = createFormatter('en-US', {
+        timeZone: tz,
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+    })
+
+    const keyFormatter = createFormatter('en-CA', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    })
+
+    const dayLabelFormatter = createFormatter('en-US', {
+        timeZone: tz,
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric',
+    })
+
+    const sections: string[] = []
+
+    if (groupByDay) {
+        const groups = new Map<
+            string,
+            {
+                label: string
+                entries: string[]
+            }
+        >()
+        const order: string[] = []
+
+        for (const item of selected) {
+            const date = new Date(item.airingAt * 1000)
+            const key = keyFormatter.format(date)
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    label: dayLabelFormatter.format(date),
+                    entries: [],
+                })
+                order.push(key)
+            }
+            const group = groups.get(key)!
+            group.entries.push(buildBulletLine(item, date, timeFormatter, nowMs))
+        }
+
+        for (const key of order) {
+            const group = groups.get(key)!
+            const lines = [`📅 ${group.label}`, ...group.entries]
+            sections.push(lines.join('\n'))
+        }
+    } else {
+        for (const item of selected) {
+            const date = new Date(item.airingAt * 1000)
+            sections.push(buildBulletLine(item, date, timeFormatter, nowMs))
+        }
+    }
+
+    if (items.length > limit) {
+        sections.push('…and more')
+    }
+
+    const message = bulletList(sections, { header, maxChars })
+
+    if (!message.trim()) {
+        return 'No upcoming episodes found.'
+    }
+
+    return message
+}
 
