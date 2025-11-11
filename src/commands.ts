@@ -40,6 +40,7 @@ export interface CommandDefinition {
     name: string
     description: string
     execute: (ctx: CommandExecuteContext) => Promise<void>
+    registerSlash?: boolean
 }
 
 export function resolveBotIdentity(currentBot: Bot<any, any> | null): { appId: string; name: string } {
@@ -395,6 +396,7 @@ export const commands: CommandDefinition[] = [
     {
         name: 'calendar',
         description: "Alias: shows this week's schedule",
+        registerSlash: false,
         execute: async (ctx) => {
             console.log('[ALIAS] /calendar -> /airing week')
             await runAiringCommand(ctx, {

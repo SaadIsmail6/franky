@@ -20,11 +20,14 @@ const invalidCommandNames = allCommandNames.filter((name) => !SLASH_COMMAND_NAME
 if (invalidCommandNames.length > 0) {
     console.error('[REGISTRY] invalid command names:', invalidCommandNames.join(', '))
 }
-const validCommandNames = allCommandNames.filter((name) => SLASH_COMMAND_NAME_REGEX.test(name))
 const validCommandDefinitions = commands.filter((definition) =>
     SLASH_COMMAND_NAME_REGEX.test(definition.name)
 )
-const commandMetadata = validCommandDefinitions.map(({ name, description }) => ({
+const registerableCommandDefinitions = validCommandDefinitions.filter(
+    (definition) => definition.registerSlash !== false
+)
+const validCommandNames = registerableCommandDefinitions.map((definition) => definition.name)
+const commandMetadata = registerableCommandDefinitions.map(({ name, description }) => ({
     name,
     description,
 })) as PlainMessage<SlashCommand>[]
