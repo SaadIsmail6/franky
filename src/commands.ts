@@ -1,5 +1,6 @@
 import type { Bot, BotHandler } from '@towns-protocol/bot'
-import { getAiringInfo, getRecommendations } from './anilist'
+import { getRecommendations } from './anilist'
+import { fetchUpcomingAiring, formatAiringList, type AiringItem } from './integrations/anilist'
 
 type Mention = {
     userId: string
@@ -121,23 +122,14 @@ export function checkTriviaAnswer(message: string, answer: string): boolean {
     return message.toLowerCase().trim().includes(answer.toLowerCase().trim())
 }
 
-function formatETA(seconds: number): string {
-    const days = Math.floor(seconds / 86400)
-    const hours = Math.floor((seconds % 86400) / 3600)
-    const minutes = Math.floor((seconds % 3600) / 60)
-    if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`
-    if (hours > 0) return `~${hours}h`
-    return minutes > 0 ? `~${minutes}m` : 'soon'
-}
-
 const COMMAND_DESCRIPTIONS: Record<string, string> = {
     help: 'Show available commands',
-    airing: 'Check next airing episode for an anime',
+    airing: 'Anime airings: now, today, week, or by title',
+    calendar: "Alias: shows this week's schedule",
     recommend: 'Get anime recommendations for a vibe',
     quote: 'Send a random anime quote',
     guess_anime: 'Start a guess-the-anime trivia game (admins only)',
     news: 'Show latest anime news (coming soon)',
-    calendar: 'Show anime airing calendar (coming soon)',
     ban: 'Ban a user (admins only)',
     mute: 'Mute a user (admins only)',
     purge: 'Purge recent messages (admins only)',
@@ -146,69 +138,222 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
     whoami: 'Show bot identity information',
 }
 
+const HELP_EXAMPLES: Record<string, string[]> = {
+    airing: ['/airing', '/airing today', '/airing one piece'],
+    calendar: ['/calendar'],
+    recommend: ['/recommend shonen'],
+    quote: ['/quote'],
+    guess_anime: ['/guess_anime'],
+    ping: ['/ping'],
+    diag: ['/diag'],
+    whoami: ['/whoami'],
+    news: ['/news'],
+    ban: ['/ban @user'],
+    mute: ['/mute @user 10m'],
+    purge: ['/purge 25'],
+}
+
+const DEFAULT_TZ = process.env.FRANKY_TZ || 'America/Toronto'
+
+type ForcedAiringOptions = {
+    forcedMode?: 'now' | 'today' | 'week'
+    forcedQuery?: string
+    note?: string
+}
+
+const AIRING_MODES = new Set(['now', 'today', 'week'])
+
+function getDayBounds(nowMs: number, tz: string): { start: number; end: number } {
+    try {
+        const formatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: tz,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        })
+        const parts = formatter.formatToParts(new Date(nowMs))
+        const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+        const year = Number(lookup.year)
+        const month = Number(lookup.month)
+        const day = Number(lookup.day)
+        if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+            throw new Error('Invalid date parts')
+        }
+        const start = Date.UTC(year, month - 1, day, 0, 0, 0, 0)
+        const end = Date.UTC(year, month - 1, day, 23, 59, 59, 999)
+        return { start, end }
+    } catch {
+        const today = new Date(nowMs)
+        const start = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+        const end = start + 24 * 60 * 60 * 1000 - 1
+        return { start, end }
+    }
+}
+
+async function runAiringCommand(
+    ctx: CommandExecuteContext,
+    overrides: ForcedAiringOptions = {}
+): Promise<void> {
+    const { handler, event, safeSendMessage } = ctx
+    const tz = DEFAULT_TZ
+    const args = event.args
+    const baseMode = args[0]?.toLowerCase()
+    let mode: 'default' | 'now' | 'today' | 'week' | 'title' = 'default'
+    let titleQuery: string | undefined
+
+    if (overrides.forcedMode) {
+        mode = overrides.forcedMode
+    } else if (baseMode && AIRING_MODES.has(baseMode)) {
+        mode = baseMode as typeof mode
+    } else if (args.length > 0) {
+        titleQuery = args.join(' ')
+        mode = 'title'
+    }
+
+    if (overrides.forcedQuery) {
+        titleQuery = overrides.forcedQuery
+        mode = 'title'
+    }
+
+    let items: AiringItem[] = []
+    try {
+        if (mode === 'title' && titleQuery) {
+            items = await fetchUpcomingAiring({ query: titleQuery, perPage: 5 })
+        } else {
+            const perPage = mode === 'default' ? 15 : 25
+            items = await fetchUpcomingAiring({ perPage })
+        }
+    } catch (error) {
+        console.error('[AIRING] fetch failed', error)
+        await safeSendMessage(handler, event.channelId, 'AniList is unavailable right now. Try again later.')
+        return
+    }
+
+    const nowMs = Date.now()
+    if (mode === 'now') {
+        const end = nowMs + 3 * 60 * 60 * 1000
+        items = items.filter((item) => {
+            const timestamp = item.airingAt * 1000
+            return timestamp >= nowMs && timestamp <= end
+        })
+    } else if (mode === 'today') {
+        const { start, end } = getDayBounds(nowMs, tz)
+        items = items.filter((item) => {
+            const timestamp = item.airingAt * 1000
+            return timestamp >= start && timestamp <= end
+        })
+    } else if (mode === 'week') {
+        const end = nowMs + 7 * 24 * 60 * 60 * 1000
+        items = items.filter((item) => {
+            const timestamp = item.airingAt * 1000
+            return timestamp >= nowMs && timestamp <= end
+        })
+    }
+
+    const header =
+        mode === 'now'
+            ? '📺 Airing Now / Soon'
+            : mode === 'today'
+            ? '📅 Airing Today'
+            : mode === 'week'
+            ? '🗓️ Airing This Week'
+            : mode === 'title' && titleQuery
+            ? `🎞️ Upcoming for ${titleQuery}`
+            : '📺 Upcoming Episodes'
+
+    console.log(`[AIRING] mode=${mode} query="${titleQuery || ''}" count=${items.length}`)
+
+    if (items.length === 0) {
+        const note = overrides.note ? `${overrides.note}\n\n` : ''
+        await safeSendMessage(handler, event.channelId, `${note}No upcoming episodes found.`.trim())
+        return
+    }
+
+    const message = formatAiringList(items, {
+        limit: 5,
+        tz,
+        header,
+    })
+    const output = overrides.note ? `${overrides.note}\n\n${message}` : message
+    await safeSendMessage(handler, event.channelId, output.trim())
+}
+
 export const commands: CommandDefinition[] = [
     {
         name: 'help',
         description: 'Show available commands',
         execute: async ({ handler, event, safeSendMessage }) => {
             const target = event.args[0]?.toLowerCase()
+            const commandNames = new Set(commands.map((command) => command.name))
+
             if (target) {
                 const info = COMMAND_DESCRIPTIONS[target]
-                if (info) {
-                    await safeSendMessage(handler, event.channelId, `/${target} — ${info}`)
+                if (info && commandNames.has(target)) {
+                    const exampleLine = HELP_EXAMPLES[target]?.length
+                        ? `\n  • ${HELP_EXAMPLES[target]!.join(', ')}`
+                        : ''
+                    await safeSendMessage(handler, event.channelId, `/${target} — ${info}${exampleLine}`)
                 } else {
                     await safeSendMessage(handler, event.channelId, `Unknown command "${target}". Try \`/help\`.`)
                 }
                 return
             }
-            await safeSendMessage(
-                handler,
-                event.channelId,
-                [
-                    'Franky — Commands',
-                    '',
-                    '• /airing <title>',
-                    '• /recommend <vibe>',
-                    '• /quote',
-                    '• /guess_anime',
-                    '• /news',
-                    '• /calendar',
-                    '• /ping',
-                    '• /diag',
-                    '• /whoami',
-                    '',
-                    'Moderation (admins):',
-                    '',
-                    '• /ban @user • /mute @user 10m • /purge 25',
-                ].join('\n')
-            )
+
+            const sections: Array<{ name: string; isAdmin?: boolean }> = [
+                { name: 'airing' },
+                { name: 'calendar' },
+                { name: 'recommend' },
+                { name: 'quote' },
+                { name: 'guess_anime' },
+                { name: 'ping' },
+                { name: 'diag' },
+                { name: 'whoami' },
+                { name: 'news' },
+                { name: 'ban', isAdmin: true },
+                { name: 'mute', isAdmin: true },
+                { name: 'purge', isAdmin: true },
+            ]
+
+            const lines: string[] = ['🤖 Franky Commands']
+            for (const section of sections) {
+                if (!commandNames.has(section.name)) {
+                    continue
+                }
+                const description = COMMAND_DESCRIPTIONS[section.name] ?? 'Command'
+                const header = section.isAdmin ? `(Admin) /${section.name}` : `/${section.name}`
+                lines.push(`${header} — ${description}`)
+                const examples = HELP_EXAMPLES[section.name]
+                if (examples?.length) {
+                    lines.push(`  • ${examples.join(', ')}`)
+                }
+            }
+            lines.push('')
+            lines.push('Tip: Type commands as messages that start with "/". No menu required.')
+
+            const helpText = lines.join('\n')
+            await safeSendMessage(handler, event.channelId, helpText.slice(0, 900))
         },
     },
     {
         name: 'airing',
-        description: 'Check next airing episode for an anime',
-        execute: async ({ handler, event, safeSendMessage }) => {
-            const title = event.args.join(' ').trim()
-            if (!title) {
-                await safeSendMessage(handler, event.channelId, 'Usage: `/airing <title>`\nExample: `/airing One Piece`')
-                return
-            }
-            try {
-                const info = await getAiringInfo(title)
-                if (!info) {
-                    await safeSendMessage(handler, event.channelId, 'Not found. Try a different title.')
-                    return
-                }
-                if (info.nextEpisode !== null && info.timeUntilSeconds !== null) {
-                    const eta = formatETA(info.timeUntilSeconds)
-                    await safeSendMessage(handler, event.channelId, `📺 ${info.title}\nNext ep: ~${eta} | #${info.nextEpisode}\n${info.siteUrl}`)
-                } else {
-                    await safeSendMessage(handler, event.channelId, `📺 ${info.title}\nNo upcoming episode info.\n${info.siteUrl}`)
-                }
-            } catch (error) {
-                await safeSendMessage(handler, event.channelId, 'AniList is not responding right now. Please try again later.')
-                console.error('AniList error:', error)
-            }
+        description: 'Anime airings: now, today, week, or by title',
+        execute: async (ctx) => {
+            await runAiringCommand(ctx)
+        },
+    },
+    {
+        name: 'calendar',
+        description: "Alias: shows this week's schedule",
+        execute: async (ctx) => {
+            console.log('[ALIAS] /calendar -> /airing week')
+            await runAiringCommand(ctx, {
+                forcedMode: 'week',
+                note: 'Note: `/calendar` is deprecated. Use `/airing week`.',
+            })
         },
     },
     {
