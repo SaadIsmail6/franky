@@ -5,6 +5,7 @@ import {
     commands,
     activeTriviaGames,
     checkTriviaAnswer,
+    resolveBotIdentity,
     type CommandDefinition,
     type SlashCommandEventPayload,
 } from './commands'
@@ -218,9 +219,8 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
     }
 
     bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned, mentions, replyId, threadId }) => {
-        // Log event summary
-        const textPreview = truncateText(message)
-        console.log(`[EVENT] type=message channel=${channelId || ''} author=${userId || ''} text=${textPreview}`)
+        const preview = (message || '').slice(0, 80)
+        console.log(`[EVENT] channel=${channelId || ''} text="${preview}"`)
 
         // Ignore self-messages
         if (userId === bot!.botId) return
@@ -354,6 +354,8 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands:
         if (botApp) {
             console.log('[DEBUG] bot.app keys:', Object.keys(botApp))
         }
+        const { appId, name } = resolveBotIdentity(bot)
+        console.log(`[START] app_id=${appId} name=${name}`)
 
         setupBotHandlers(bot)
 

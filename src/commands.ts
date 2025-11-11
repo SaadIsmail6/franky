@@ -41,6 +41,29 @@ export interface CommandDefinition {
     execute: (ctx: CommandExecuteContext) => Promise<void>
 }
 
+export function resolveBotIdentity(currentBot: Bot<any, any> | null): { appId: string; name: string } {
+    if (!currentBot) {
+        return { appId: 'unknown', name: 'unknown' }
+    }
+    const candidateAppId =
+        (currentBot as unknown as { appAddress?: string }).appAddress ??
+        (currentBot as unknown as { appId?: string }).appId ??
+        (currentBot as unknown as { botId?: string }).botId ??
+        (currentBot as unknown as { app?: { appId?: string; id?: string } }).app?.appId ??
+        (currentBot as unknown as { app?: { appId?: string; id?: string } }).app?.id
+    const candidateName =
+        (currentBot as unknown as { app?: { name?: string; displayName?: string } }).app?.name ??
+        (currentBot as unknown as { app?: { name?: string; displayName?: string } }).app?.displayName ??
+        (currentBot as unknown as { name?: string }).name ??
+        (currentBot as unknown as { botName?: string }).botName ??
+        (currentBot as unknown as { displayName?: string }).displayName
+
+    return {
+        appId: typeof candidateAppId === 'string' ? candidateAppId : 'unknown',
+        name: typeof candidateName === 'string' ? candidateName : 'unknown',
+    }
+}
+
 export const activeTriviaGames = new Map<
     string,
     {
@@ -120,6 +143,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
     purge: 'Purge recent messages (admins only)',
     ping: 'Check if Franky is responsive',
     diag: 'Show diagnostic information',
+    whoami: 'Show bot identity information',
 }
 
 export const commands: CommandDefinition[] = [
@@ -151,6 +175,7 @@ export const commands: CommandDefinition[] = [
                     '• /calendar',
                     '• /ping',
                     '• /diag',
+                    '• /whoami',
                     '',
                     'Moderation (admins):',
                     '',
@@ -336,10 +361,19 @@ export const commands: CommandDefinition[] = [
     {
         name: 'diag',
         description: 'Show diagnostic information',
-        execute: async ({ handler, event, safeSendMessage, startTime }) => {
+        execute: async ({ handler, event, safeSendMessage, startTime, bot }) => {
             const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000)
-            const diagnostics = `Franky diag — uptime=${uptimeSeconds}s channel=${event.channelId} user=${event.userId}`
+            const { appId, name } = resolveBotIdentity(bot)
+            const diagnostics = `Franky diag — uptime=${uptimeSeconds}s channel=${event.channelId} user=${event.userId} app_id=${appId} name=${name}`
             await safeSendMessage(handler, event.channelId, diagnostics)
+        },
+    },
+    {
+        name: 'whoami',
+        description: 'Show bot identity information',
+        execute: async ({ handler, event, safeSendMessage, bot }) => {
+            const { appId, name } = resolveBotIdentity(bot)
+            await safeSendMessage(handler, event.channelId, `app_id=${appId} name=${name}`)
         },
     },
 ]
