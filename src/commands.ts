@@ -134,9 +134,6 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
     ban: 'Ban a user (admins only)',
     mute: 'Mute a user (admins only)',
     purge: 'Purge recent messages (admins only)',
-    ping: 'Check if Franky is responsive',
-    diag: 'Show diagnostic information',
-    whoami: 'Show bot identity information',
 }
 
 const DEFAULT_TZ = process.env.FRANKY_TZ || 'America/Toronto'
@@ -318,21 +315,6 @@ export const commands: CommandDefinition[] = [
                     example: '  e.g. /guess_anime',
                 },
                 {
-                    key: 'ping',
-                    label: '/ping — Bot check',
-                    example: '  e.g. /ping',
-                },
-                {
-                    key: 'diag',
-                    label: '/diag — Bot status',
-                    example: '  e.g. /diag',
-                },
-                {
-                    key: 'whoami',
-                    label: '/whoami — Bot identity info',
-                    example: '  e.g. /whoami',
-                },
-                {
                     key: 'news',
                     label: '/news — Show latest anime news (coming soon)',
                     example: '  e.g. /news',
@@ -449,7 +431,7 @@ export const commands: CommandDefinition[] = [
                 return
             }
             const question = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)]
-            await safeSendMessage(handler, event.channelId, `**🎮 Guess the Anime**\n\n${question.clue}\n\n*60 seconds to answer!*`)
+            await safeSendMessage(handler, event.channelId, `**🎮 Guess the Anime**\n\n${question.clue}\n\n*15 seconds to answer!*`)
             const timeoutId = setTimeout(async () => {
                 const game = activeTriviaGames.get(event.channelId)
                 activeTriviaGames.delete(event.channelId)
@@ -462,7 +444,7 @@ export const commands: CommandDefinition[] = [
                         console.error(`[SEND-ERROR] code=${errorCode ?? 'unknown'} message="${errorMessage}"`)
                     }
                 }
-            }, 60000)
+            }, 15000)
             activeTriviaGames.set(event.channelId, {
                 answer: question.answer,
                 clue: question.clue,
@@ -476,13 +458,6 @@ export const commands: CommandDefinition[] = [
         description: 'Show latest anime news (coming soon)',
         execute: async ({ handler, event, safeSendMessage }) => {
             await safeSendMessage(handler, event.channelId, '📰 Anime news (coming soon).')
-        },
-    },
-    {
-        name: 'calendar',
-        description: 'Show anime airing calendar (coming soon)',
-        execute: async ({ handler, event, safeSendMessage }) => {
-            await safeSendMessage(handler, event.channelId, '🗓️ Weekly airing calendar (coming soon).')
         },
     },
     {
@@ -543,31 +518,6 @@ export const commands: CommandDefinition[] = [
             }
             console.log(`[${new Date().toISOString()}] 🗑️ Purge ${count} messages by ${event.userId}`)
             await safeSendMessage(handler, event.channelId, `🗑️ Purge ${count} messages...\nNote: Implementation coming soon.`)
-        },
-    },
-    {
-        name: 'ping',
-        description: 'Check if Franky is responsive',
-        execute: async ({ handler, event, safeSendMessage }) => {
-            await safeSendMessage(handler, event.channelId, 'pong')
-        },
-    },
-    {
-        name: 'diag',
-        description: 'Show diagnostic information',
-        execute: async ({ handler, event, safeSendMessage, startTime, bot }) => {
-            const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000)
-            const { appId, name } = resolveBotIdentity(bot)
-            const diagnostics = `Franky diag — uptime=${uptimeSeconds}s channel=${event.channelId} user=${event.userId} app_id=${appId} name=${name}`
-            await safeSendMessage(handler, event.channelId, diagnostics)
-        },
-    },
-    {
-        name: 'whoami',
-        description: 'Show bot identity information',
-        execute: async ({ handler, event, safeSendMessage, bot }) => {
-            const { appId, name } = resolveBotIdentity(bot)
-            await safeSendMessage(handler, event.channelId, `app_id=${appId} name=${name}`)
         },
     },
 ]
