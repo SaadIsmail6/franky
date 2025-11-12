@@ -242,6 +242,17 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             return
         }
 
+        // React to messages mentioning "gAnime"
+        if (message?.toLowerCase().includes('ganime')) {
+            try {
+                await handler.sendReaction(channelId, eventId, '🌸')
+                console.log(`[REACTION] Added 🌸 to message ${eventId}`)
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error)
+                console.error(`[REACTION-ERROR] Failed to add 🌸 reaction: ${errorMessage}`)
+            }
+        }
+
         // Trivia check
         const game = activeTriviaGames.get(channelId)
         if (game && !game.hasWinner && checkTriviaAnswer(message, game.answer)) {
