@@ -265,8 +265,21 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             return
         }
 
-        // Mentions - case-insensitive check for "@franky" or bot name
+        // Greeting triggers (case-insensitive, must include "franky")
         const lower = message.toLowerCase()
+        const greetingPatterns = [
+            /^hi\s+franky/i,
+            /^hello\s+franky/i,
+            /^yo\s+franky/i,
+            /^hey\s+franky/i,
+        ]
+        const isGreeting = greetingPatterns.some((pattern) => pattern.test(message))
+        if (isGreeting) {
+            await safeSendMessage(handler, channelId, '👋 Hey! To see what I can do, type **/help**.')
+            return
+        }
+
+        // Mentions - case-insensitive check for "@franky" or bot name
         // Check for @franky (with @) or just "franky" (already handled by isMentioned flag)
         const mentioned = isMentioned || lower.includes('@franky') || lower.includes('franky')
         if (mentioned) {

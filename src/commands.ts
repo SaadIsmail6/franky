@@ -281,6 +281,7 @@ export const commands: CommandDefinition[] = [
         execute: async ({ handler, event, safeSendMessage }) => {
             const target = event.args[0]?.toLowerCase()
             const commandNames = new Set(commands.map((command) => command.name))
+            const isAdmin = await handler.hasAdminPermission(event.userId, event.spaceId)
 
             const sections: Array<{
                 key: string
@@ -288,6 +289,7 @@ export const commands: CommandDefinition[] = [
                 example?: string
                 requires?: string[]
                 customCondition?: boolean
+                isAdmin?: boolean
             }> = [
                 {
                     key: 'airing',
@@ -313,6 +315,7 @@ export const commands: CommandDefinition[] = [
                     key: 'guess_anime',
                     label: '/guess_anime — Guess-the-anime game',
                     example: '  e.g. /guess_anime',
+                    isAdmin: true,
                 },
                 {
                     key: 'news',
@@ -324,12 +327,18 @@ export const commands: CommandDefinition[] = [
                     label: 'Admin: /ban, /mute, /purge (restricted)',
                     example: '  e.g. /ban @user, /mute @user 10m, /purge 50',
                     requires: ['ban', 'mute', 'purge'],
+                    isAdmin: true,
                 },
             ]
 
             if (target) {
                 const section = sections.find((section) => section.key === target)
                 if (section) {
+                    // Check if section requires admin and user is not admin
+                    if (section.isAdmin && !isAdmin) {
+                        await safeSendMessage(handler, event.channelId, `Unknown command "${target}". Try \`/help\`.`)
+                        return
+                    }
                     const requiredCommands = section.requires ?? [section.key]
                     const available = requiredCommands.every((name) => commandNames.has(name))
                     if (available) {
@@ -348,6 +357,10 @@ export const commands: CommandDefinition[] = [
             const lines: string[] = ['🤖 Franky Commands', '']
 
             for (const section of sections) {
+                // Skip admin-only sections for non-admin users
+                if (section.isAdmin && !isAdmin) {
+                    continue
+                }
                 const requiredCommands = section.requires ?? [section.key]
                 const available = requiredCommands.every((name) => commandNames.has(name))
                 if (!available) continue
