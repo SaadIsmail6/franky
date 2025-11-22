@@ -322,13 +322,6 @@ export const commands: CommandDefinition[] = [
                     label: '/news — Show latest anime news (coming soon)',
                     example: '  e.g. /news',
                 },
-                {
-                    key: 'admin',
-                    label: 'Admin: /ban, /mute, /purge (restricted)',
-                    example: '  e.g. /ban @user, /mute @user 10m, /purge 50',
-                    requires: ['ban', 'mute', 'purge'],
-                    isAdmin: true,
-                },
             ]
 
             if (target) {
