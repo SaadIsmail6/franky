@@ -1,6 +1,7 @@
 import type { Bot, BotHandler } from '@towns-protocol/bot'
 import { getRecommendations } from './anilist'
 import { fetchUpcomingAiring, formatAiringList, type AiringItem } from './integrations/anilist'
+import { parseRecommendationQuery, fetchRecommendations, formatRecommendations } from './integrations/recommendations'
 
 type Mention = {
     userId: string
@@ -303,8 +304,8 @@ export const commands: CommandDefinition[] = [
                 },
                 {
                     key: 'recommend',
-                    label: '/recommend — Get anime recs',
-                    example: '  e.g. /recommend shonen',
+                    label: '/recommend — Smart anime recommendations',
+                    example: '  e.g. /recommend dark shonen, /recommend one piece, /recommend short anime',
                 },
                 {
                     key: 'quote',
@@ -395,23 +396,36 @@ export const commands: CommandDefinition[] = [
     },
     {
         name: 'recommend',
-        description: 'Get anime recommendations for a vibe',
+        description: 'Smart anime recommendations (genre+mood, similar to X, length filters)',
         execute: async ({ handler, event, safeSendMessage }) => {
-            const vibe = event.args.join(' ').trim() || 'action'
+            const query = event.args.join(' ').trim()
+            if (!query) {
+                await safeSendMessage(
+                    handler,
+                    event.channelId,
+                    'Usage: `/recommend <query>`\n\nExamples:\n• `/recommend dark shonen`\n• `/recommend one piece`\n• `/recommend short anime`\n• `/recommend underrated`'
+                )
+                return
+            }
+            
             try {
-                const recs = await getRecommendations(vibe)
-                if (recs.length === 0) {
-                    await safeSendMessage(handler, event.channelId, `No anime found for "${vibe}". Try a different genre.`)
-                    return
-                }
-                let msg = `🎯 Top ${recs.length} "${vibe}" anime\n\n`
-                for (const rec of recs) {
-                    msg += `• ${rec.title} — eps: ${rec.episodes ?? '?'} — score: ${rec.score ?? '?'}\n${rec.siteUrl}\n\n`
-                }
-                await safeSendMessage(handler, event.channelId, msg.trim())
+                console.log(`[RECOMMEND] Query: "${query}"`)
+                const parsedQuery = parseRecommendationQuery(query)
+                console.log(`[RECOMMEND] Parsed:`, parsedQuery)
+                
+                const recs = await fetchRecommendations(parsedQuery, 10)
+                console.log(`[RECOMMEND] Found ${recs.length} recommendations`)
+                
+                const formatted = formatRecommendations(recs, query)
+                await safeSendMessage(handler, event.channelId, formatted)
             } catch (error) {
-                await safeSendMessage(handler, event.channelId, 'AniList is not responding right now. Please try again later.')
-                console.error('AniList error:', error)
+                const errorMessage = error instanceof Error ? error.message : String(error)
+                console.error('[RECOMMEND] Error:', errorMessage)
+                await safeSendMessage(
+                    handler,
+                    event.channelId,
+                    'AniList is not responding right now. Please try again later.'
+                )
             }
         },
     },
