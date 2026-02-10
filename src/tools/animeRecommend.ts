@@ -7,6 +7,7 @@ import type { ToolResult } from '../agent/types'
 import type { AgentContext } from '../agent/types'
 import type { ToolInputBase } from './types'
 import { getAnimeDataProvider } from '../services/animeDataProvider'
+import { getChannelGenreHits, recordChannelGenre } from '../services/memoryStore'
 import { logTool } from '../services/logger'
 
 const MOOD_TO_GENRE: Record<string, string> = {
@@ -39,7 +40,15 @@ export async function run(
       const fromMemory = input.memory?.favoriteGenres?.length ? input.memory.favoriteGenres : []
       const fromClassifier = input.genres ?? []
       const fromMoods = (input.moods ?? []).map((m) => MOOD_TO_GENRE[m.toLowerCase()]).filter(Boolean) as string[]
-      const genres = [...new Set([...fromMemory, ...fromClassifier, ...fromMoods])]
+      const channelHits = _ctx?.channelId ? getChannelGenreHits(_ctx.channelId) : {}
+      const channelGenres = Object.entries(channelHits)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(([g]) => g)
+      const genres = [...new Set([...fromMemory, ...fromClassifier, ...fromMoods, ...channelGenres])]
+      if (_ctx?.channelId && fromClassifier.length) {
+        fromClassifier.forEach((g) => recordChannelGenre(_ctx.channelId, g))
+      }
       items = await provider.searchByFilters({
         genres: genres.length ? genres : undefined,
         limit: 8,

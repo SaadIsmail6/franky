@@ -2,6 +2,7 @@ import type { Bot, BotHandler } from '@towns-protocol/bot'
 import { getRecommendations } from './anilist'
 import { fetchUpcomingAiring, formatAiringList, type AiringItem } from './integrations/anilist'
 import { parseRecommendationQuery, fetchRecommendations, formatRecommendations } from './integrations/recommendations'
+import { openFrankyMiniapp, getOpenFrankyUILinkSuffix } from './utils/openFrankyMiniapp'
 
 type Mention = {
     userId: string
@@ -126,6 +127,7 @@ export function checkTriviaAnswer(message: string, answer: string): boolean {
 
 const COMMAND_DESCRIPTIONS: Record<string, string> = {
     help: 'Show available commands',
+    franky: 'Open Franky Anime UI miniapp',
     airing: 'Anime airings: now, today, week, or by title',
     calendar: "Alias: shows this week's schedule",
     recommend: 'Get anime recommendations for a vibe',
@@ -267,7 +269,8 @@ async function runAiringCommand(
         groupByDay: mode === 'week' || mode === 'today',
     })
 
-    const finalMessage = overrides.note ? `${overrides.note}\n\n${message}` : message
+    let finalMessage = overrides.note ? `${overrides.note}\n\n${message}` : message
+    finalMessage += getOpenFrankyUILinkSuffix()
     await safeSendMessage(handler, event.channelId, finalMessage)
     console.log(`[AIRING] reply chars=${finalMessage.length} items=${Math.min(items.length, limit)}`)
     if (finalMessage.includes('…and more')) {
@@ -276,6 +279,15 @@ async function runAiringCommand(
 }
 
 export const commands: CommandDefinition[] = [
+    {
+        name: 'franky',
+        description: 'Open Franky Anime UI miniapp',
+        execute: async ({ handler, event, safeSendMessage }) => {
+            await openFrankyMiniapp(handler)
+            const msg = 'Launching Franky Anime UI 🎌' + getOpenFrankyUILinkSuffix()
+            await safeSendMessage(handler, event.channelId, msg)
+        },
+    },
     {
         name: 'help',
         description: 'Show available commands',
@@ -292,6 +304,11 @@ export const commands: CommandDefinition[] = [
                 customCondition?: boolean
                 isAdmin?: boolean
             }> = [
+                {
+                    key: 'franky',
+                    label: '/franky — Open Franky Anime UI',
+                    example: '  e.g. /franky',
+                },
                 {
                     key: 'airing',
                     label: '/airing — Anime airings (now/today/week or by title)',
@@ -425,7 +442,8 @@ export const commands: CommandDefinition[] = [
                 console.log(`[RECOMMEND] Found ${recs.length} recommendations`)
                 
                 const formatted = formatRecommendations(recs, query)
-                await safeSendMessage(handler, event.channelId, formatted)
+                await openFrankyMiniapp(handler)
+                await safeSendMessage(handler, event.channelId, formatted + getOpenFrankyUILinkSuffix())
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error)
                 console.error('[RECOMMEND] Error:', errorMessage)

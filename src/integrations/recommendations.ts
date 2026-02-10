@@ -4,6 +4,7 @@
  */
 
 export interface EnhancedRecommendation {
+    id?: string
     title: string
     episodes: number | null
     score: number | null
@@ -237,6 +238,7 @@ async function fetchSimilarAnime(title: string, limit: number): Promise<Enhanced
                 ]
                 
                 return {
+                    id: media.id != null ? String(media.id) : undefined,
                     title,
                     episodes: media.episodes ?? null,
                     score: media.averageScore ?? null,
@@ -357,6 +359,7 @@ async function fetchFilteredAnime(
             ]
             
             return {
+                id: media.id != null ? String(media.id) : undefined,
                 title,
                 episodes: media.episodes ?? null,
                 score: media.averageScore ?? null,

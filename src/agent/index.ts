@@ -16,6 +16,7 @@ export interface HandleMessageResult {
   shouldReply: boolean
   text?: string
   miniappPayload?: FormattedResponse['miniappPayload']
+  openMiniapp?: boolean
 }
 
 export function handleMessage(message: string, ctx: AgentContext): Promise<HandleMessageResult> {
@@ -38,6 +39,13 @@ export function handleMessage(message: string, ctx: AgentContext): Promise<Handl
     })
   }
 
+  if (safety.isAnimeOnlyReject(trimmed)) {
+    return Promise.resolve({
+      shouldReply: true,
+      text: safety.ANIME_ONLY_MESSAGE,
+    })
+  }
+
   return (async () => {
     const classified = classifyIntent(trimmed)
     logAgent('intent', { intent: classified.intent, confidence: classified.confidence })
@@ -52,6 +60,7 @@ export function handleMessage(message: string, ctx: AgentContext): Promise<Handl
       shouldReply: true,
       text: formatted.text,
       miniappPayload: formatted.miniappPayload,
+      openMiniapp: formatted.openMiniapp,
     }
   })()
 }

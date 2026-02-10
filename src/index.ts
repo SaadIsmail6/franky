@@ -13,6 +13,7 @@ import { registerSlashCommandsPortable } from './registry'
 import { shouldUseV2Agent, handleV2Message } from './towns/botHandlers'
 import { setAnimeDataProvider } from './services/animeDataProvider'
 import { AniListAnimeDataProvider } from './services/anilistProvider'
+import { openFrankyMiniapp, getOpenFrankyUILinkSuffix } from './utils/openFrankyMiniapp'
 
 const SLASH_COMMAND_NAME_REGEX = /^[A-Za-z0-9_]+$/
 const SLASH_ALIAS_MAP: Record<string, string> = {
@@ -245,6 +246,16 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             return
         }
 
+        // Natural language UI triggers – open miniapp and short confirmation
+        const lowerMsg = message?.toLowerCase().trim() ?? ''
+        const uiTriggerPhrases = ['open franky', 'launch franky', 'anime ui', 'show anime']
+        const isUITrigger = uiTriggerPhrases.some((p) => lowerMsg === p || lowerMsg.startsWith(p + ' ') || lowerMsg.endsWith(' ' + p))
+        if (isUITrigger) {
+            await openFrankyMiniapp(handler)
+            await safeSendMessage(handler, channelId, 'Franky Anime UI opened 🎌' + getOpenFrankyUILinkSuffix())
+            return
+        }
+
         // Franky v2 agent (natural language) – when FRANKY_V2=true and message triggers
         if (shouldUseV2Agent(message)) {
             try {
@@ -255,7 +266,15 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
                     displayName: (mentions?.find((m: { userId?: string }) => m?.userId === userId) as { displayName?: string } | undefined)?.displayName,
                 })
                 if (v2Result?.text) {
-                    await safeSendMessage(handler, channelId, v2Result.text)
+                    let replyText = v2Result.text
+                    if (v2Result.openMiniapp) {
+                        await openFrankyMiniapp(handler)
+                        replyText += getOpenFrankyUILinkSuffix()
+                    } else if (v2Result.miniappPayload && typeof v2Result.miniappPayload === 'object' && (v2Result.miniappPayload as { view?: string }).view) {
+                        await openFrankyMiniapp(handler)
+                        replyText += getOpenFrankyUILinkSuffix()
+                    }
+                    await safeSendMessage(handler, channelId, replyText)
                     return
                 }
             } catch (v2Err) {
@@ -409,6 +428,23 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands:
         console.log(`[START] app_id=${appId} name=${name}`)
 
         setupBotHandlers(bot)
+
+        // Towns SDK capability check (handler actions when available)
+        const supportedHandlerActions = ['sendMessage', 'sendReaction', 'editMessage', 'adminRemoveEvent', 'hasAdminPermission', 'checkPermission', 'sendInteractionRequest']
+        console.log('[START] Supported handler actions:', supportedHandlerActions.join(', '))
+        try {
+            const botWithActions = bot as unknown as { actions?: { ready?: () => void | Promise<void>; getCapabilities?: () => unknown } }
+            if (botWithActions?.actions?.ready) {
+                await Promise.resolve(botWithActions.actions.ready())
+                console.log('[START] actions.ready() called')
+            }
+            if (botWithActions?.actions?.getCapabilities) {
+                const caps = botWithActions.actions.getCapabilities()
+                console.log('[START] actions.getCapabilities:', caps)
+            }
+        } catch (e) {
+            // optional
+        }
 
         const webhook = bot.start()
         jwtMiddleware = webhook.jwtMiddleware

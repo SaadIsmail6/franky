@@ -37,9 +37,9 @@ export function shouldUseV2Agent(message: string): boolean {
 export async function handleV2Message(
   message: string,
   context: { userId: string; displayName?: string; username?: string; spaceId: string; channelId: string; address?: string; env?: string }
-): Promise<{ text?: string; miniappPayload?: unknown } | null> {
+): Promise<{ text?: string; miniappPayload?: unknown; openMiniapp?: boolean } | null> {
   const ctx = buildAgentContext(context)
   const result = await handleMessage(message, ctx)
   if (!result.shouldReply || !result.text) return null
-  return { text: result.text, miniappPayload: result.miniappPayload }
+  return { text: result.text, miniappPayload: result.miniappPayload, openMiniapp: result.openMiniapp }
 }

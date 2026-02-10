@@ -40,3 +40,17 @@ export function filterResponseText(text: string): string {
 export function getRedirectMessage(): string {
   return "I'm an anime-focused agent. Ask me about recommendations, characters, watch orders, or what's trending."
 }
+
+const NON_ANIME_TOPICS = [
+  /tcg|trading\s*card|magic\s*the\s*gathering|pokemon\s*card|yugioh\s*card/i,
+  /crypto|bitcoin|nft|wallet|blockchain/i,
+  /sports\s*score|nfl|football\s*match|soccer\s*result/i,
+  /weather|recipe|cooking\s*show/i,
+  /political|election|vote\s*for/i,
+]
+
+export function isAnimeOnlyReject(text: string): boolean {
+  return NON_ANIME_TOPICS.some((p) => p.test(text))
+}
+
+export const ANIME_ONLY_MESSAGE = "I'm Franky — I only handle anime 🎌"

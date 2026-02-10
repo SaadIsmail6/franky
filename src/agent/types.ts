@@ -15,6 +15,9 @@ export enum Intent {
   RANKING = 'RANKING',
   TRIVIA = 'TRIVIA',
   GENERAL_ANIME_CHAT = 'GENERAL_ANIME_CHAT',
+  OPEN_UI = 'OPEN_UI',
+  POLL = 'POLL',
+  COMPARE = 'COMPARE',
   UNKNOWN = 'UNKNOWN',
 }
 
@@ -32,9 +35,13 @@ export interface MemorySnapshot {
   favoriteGenres: string[]
   likedAnimeIds: string[]
   dislikedAnimeIds: string[]
+  likedTitles: string[]
+  dislikedTitles: string[]
   lastRecommendations: AnimeResult[]
+  lastRecommended: AnimeResult[]
   quizStats: { totalQuestions: number; correct: number; lastScore?: number }
   tonePreference?: 'chill' | 'hype' | 'neutral'
+  interactionCount: number
 }
 
 export interface AgentContext {
@@ -54,3 +61,6 @@ export type ToolResult =
   | { kind: 'quiz'; question: string; options: string[]; correctIndex: number; meta?: Record<string, unknown> }
   | { kind: 'match'; characterName: string; animeTitle: string; confidence: number; description: string; meta?: Record<string, unknown> }
   | { kind: 'guide'; steps: { order: number; title: string; description?: string }[]; seriesName: string }
+  | { kind: 'open_ui' }
+  | { kind: 'poll'; question: string; options: string[]; meta?: Record<string, unknown> }
+  | { kind: 'quiz_batch'; questions: Array<{ question: string; options: string[]; correctIndex: number }> }

@@ -19,6 +19,10 @@ const QUIZ_KEYWORDS = ['quiz', 'quiz me', 'test me', 'trivia game', 'anime quiz'
 const MATCH_KEYWORDS = ['character match', 'match me', 'which character', 'who am i like']
 const RANKING_KEYWORDS = ['ranking', 'rank', 'top anime', 'best anime', 'tier list', 'top 10']
 const TRIVIA_KEYWORDS = ['trivia', 'fact', 'did you know', 'tell me a fact']
+const OPEN_UI_KEYWORDS = ['open franky', 'open ui', 'open the ui', 'launch franky', 'anime ui', 'show anime ui']
+const POLL_KEYWORDS = ['create anime poll', 'anime poll', 'vote best anime', 'create poll', 'make a poll']
+const QUIZ_BUILDER_KEYWORDS = ['build anime quiz', 'build a quiz', 'make a quiz', 'create quiz']
+const COMPARE_KEYWORDS = ['compare', 'vs', 'versus', 'better than', 'or']
 
 const GENRE_WORDS: Record<string, string> = {
   action: 'Action', shonen: 'Shounen', shoujo: 'Shoujo', seinen: 'Seinen', josei: 'Josei',
@@ -87,15 +91,18 @@ export function classifyIntent(rawQuery: string): ClassifiedIntent {
   const detectedCharacter = detectCharacter(trimmed)
 
   const scores: Array<{ intent: Intent; score: number }> = [
+    { intent: Intent.OPEN_UI, score: scoreKeyword(trimmed, OPEN_UI_KEYWORDS) },
+    { intent: Intent.POLL, score: scoreKeyword(trimmed, POLL_KEYWORDS) },
     { intent: Intent.ANIME_RECOMMEND, score: scoreKeyword(trimmed, RECOMMEND_KEYWORDS) + (detectedTitle ? 2 : 0) },
     { intent: Intent.CHARACTER_INFO, score: scoreKeyword(trimmed, CHARACTER_KEYWORDS) + (detectedCharacter ? 2 : 0) },
     { intent: Intent.WATCH_ORDER, score: scoreKeyword(trimmed, WATCH_ORDER_KEYWORDS) },
     { intent: Intent.TRENDING, score: scoreKeyword(trimmed, TRENDING_KEYWORDS) },
     { intent: Intent.SEASONAL, score: scoreKeyword(trimmed, SEASONAL_KEYWORDS) },
-    { intent: Intent.QUIZ, score: scoreKeyword(trimmed, QUIZ_KEYWORDS) },
+    { intent: Intent.QUIZ, score: scoreKeyword(trimmed, QUIZ_KEYWORDS) + scoreKeyword(trimmed, QUIZ_BUILDER_KEYWORDS) },
     { intent: Intent.CHARACTER_MATCH, score: scoreKeyword(trimmed, MATCH_KEYWORDS) },
     { intent: Intent.RANKING, score: scoreKeyword(trimmed, RANKING_KEYWORDS) },
     { intent: Intent.TRIVIA, score: scoreKeyword(trimmed, TRIVIA_KEYWORDS) },
+    { intent: Intent.COMPARE, score: scoreKeyword(trimmed, COMPARE_KEYWORDS) },
   ]
 
   scores.sort((a, b) => b.score - a.score)

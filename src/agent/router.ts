@@ -17,7 +17,9 @@ import * as animeQuiz from '../tools/animeQuiz'
 import * as animeMatch from '../tools/animeMatch'
 import * as animeRanking from '../tools/animeRanking'
 import * as animeTrivia from '../tools/animeTrivia'
+import * as animePoll from '../tools/animePoll'
 import { logTool } from '../services/logger'
+import { checkRateLimit, recordRateLimit } from '../utils/rateLimit'
 
 export async function route(
   classified: ClassifiedIntent,
@@ -65,8 +67,13 @@ export async function route(
       return animeSeasonal.run({ query, memory, ...ctx }, ctx)
     }
     case Intent.QUIZ: {
+      if (checkRateLimit(ctx.channelId, 'quiz')) {
+        return { kind: 'text', text: 'Wait a bit before starting another quiz.' }
+      }
       logTool('animeQuiz', 'routing', {})
-      return animeQuiz.run({ query, memory, ...ctx }, ctx)
+      const quizResult = await animeQuiz.run({ query, memory, ...ctx }, ctx)
+      if (quizResult.kind === 'quiz' || quizResult.kind === 'quiz_batch') recordRateLimit(ctx.channelId, 'quiz')
+      return quizResult
     }
     case Intent.CHARACTER_MATCH: {
       logTool('animeMatch', 'routing', {})
@@ -79,6 +86,22 @@ export async function route(
     case Intent.TRIVIA: {
       logTool('animeTrivia', 'routing', {})
       return animeTrivia.run({ query, memory, ...ctx }, ctx)
+    }
+    case Intent.OPEN_UI: {
+      return { kind: 'open_ui' }
+    }
+    case Intent.POLL: {
+      if (checkRateLimit(ctx.channelId, 'poll')) {
+        return { kind: 'text', text: 'Wait a bit before creating another poll.' }
+      }
+      logTool('animePoll', 'routing', {})
+      const pollResult = await animePoll.run({ query, memory, ...ctx }, ctx)
+      if (pollResult.kind === 'poll') recordRateLimit(ctx.channelId, 'poll')
+      return pollResult
+    }
+    case Intent.COMPARE: {
+      logTool('router', 'compare -> recommend', {})
+      return animeRecommend.run({ query, memory, ...ctx }, ctx)
     }
     case Intent.GENERAL_ANIME_CHAT:
     case Intent.UNKNOWN:
