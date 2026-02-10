@@ -348,7 +348,15 @@ export const commands: CommandDefinition[] = [
                 return
             }
 
-            const lines: string[] = ['🤖 Franky Commands', '']
+            const lines: string[] = [
+                '**How to use Franky**',
+                '',
+                '• **Slash commands** — Type / then the command: /help, /airing, /recommend, /quote, etc.',
+                '• **Natural language** — Mention @Franky and ask normally: *what should I watch*, *something like Attack on Titan*, *who is Gojo*, *watch order for Fate*, *quiz me*, *what\'s trending*.',
+                '',
+                '**Commands**',
+                '',
+            ]
 
             for (const section of sections) {
                 // Skip admin-only sections for non-admin users
@@ -369,7 +377,7 @@ export const commands: CommandDefinition[] = [
                 lines.pop()
             }
 
-            lines.push('', 'Tip: Type commands as messages that start with "/".')
+            lines.push('', 'Tip: /help recommend (or any command name) shows details for that command.')
 
             const helpText = lines.join('\n').slice(0, 900)
             await safeSendMessage(handler, event.channelId, helpText)
