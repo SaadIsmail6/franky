@@ -10,6 +10,9 @@ import {
     type SlashCommandEventPayload,
 } from './commands'
 import { registerSlashCommandsPortable } from './registry'
+import { shouldUseV2Agent, handleV2Message } from './towns/botHandlers'
+import { setAnimeDataProvider } from './services/animeDataProvider'
+import { AniListAnimeDataProvider } from './services/anilistProvider'
 
 const SLASH_COMMAND_NAME_REGEX = /^[A-Za-z0-9_]+$/
 const SLASH_ALIAS_MAP: Record<string, string> = {
@@ -242,6 +245,24 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             return
         }
 
+        // Franky v2 agent (natural language) – when FRANKY_V2=true and message triggers
+        if (shouldUseV2Agent(message)) {
+            try {
+                const v2Result = await handleV2Message(message, {
+                    userId,
+                    spaceId,
+                    channelId,
+                    displayName: (mentions?.find((m: { userId?: string }) => m?.userId === userId) as { displayName?: string } | undefined)?.displayName,
+                })
+                if (v2Result?.text) {
+                    await safeSendMessage(handler, channelId, v2Result.text)
+                    return
+                }
+            } catch (v2Err) {
+                console.error('[FRANKY_V2]', v2Err)
+            }
+        }
+
         // React to messages mentioning "gAnime"
         if (message?.toLowerCase().includes('ganime')) {
             try {
@@ -372,6 +393,9 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 // ============================================================================
 
 console.log('[START] loading commands from commands.ts')
+
+// Franky v2: use AniList as anime data provider
+setAnimeDataProvider(new AniListAnimeDataProvider())
 
 makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands: commandMetadata })
     .then(async (initializedBot) => {
