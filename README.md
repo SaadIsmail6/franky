@@ -33,6 +33,7 @@ This bot demonstrates the basic functionality of a Towns bot:
 - `APP_PRIVATE_DATA`: Your Towns app private data
 - `JWT_SECRET`: JWT secret for authentication
 - `PORT`: Port to run the bot on (optional, defaults to 5123)
+- **`BASE_MAINNET_RPC_URL`** (optional but recommended for production): Base mainnet RPC URL. If unset, the Towns SDK uses a default public endpoint that can hit **429 Bandwidth limit exceeded** on deploy (e.g. Render). Set this to a URL with higher limits (e.g. from [Alchemy](https://alchemy.com), [Infura](https://infura.io), or [QuickNode](https://quicknode.com) for Base) to avoid "Bot still initializing" and webhooks failing to complete init.
 
 ## Usage
 
@@ -56,3 +57,22 @@ The bot is implemented as a single file (`src/index.ts`) with:
 5. **Server Setup**: Start the bot HTTP server
 
 This is the perfect starting point for building more complex bots!
+
+## Franky Mini App (AnimeTown)
+
+The Franky anime agent runs as a Towns/Farcaster Mini App with neon AnimeTown-style UI.
+
+### Run the mini app locally
+
+1. From the repo root: `cd miniapp`
+2. Install: `npm install` or `bun install`
+3. Dev server: `npm run dev` or `bun run dev`
+4. Open the URL shown (e.g. `http://localhost:5173`). In Towns, set `MINIAPP_URL` to your deployed miniapp URL.
+
+### Dev mode
+
+Append `?dev=true` to the miniapp URL to show the debug panel (context, SDK capabilities, wallet status).
+
+### Launch from chat
+
+Type **Franky** (or **open franky**, **launch franky**) in a channel where the bot is present to open the mini app.

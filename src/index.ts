@@ -246,9 +246,9 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             return
         }
 
-        // Natural language UI triggers – open miniapp and short confirmation
+        // Natural language UI triggers – open miniapp and short confirmation (keyword: Franky)
         const lowerMsg = message?.toLowerCase().trim() ?? ''
-        const uiTriggerPhrases = ['open franky', 'launch franky', 'anime ui', 'show anime']
+        const uiTriggerPhrases = ['franky', 'open franky', 'launch franky', 'anime ui', 'show anime']
         const isUITrigger = uiTriggerPhrases.some((p) => lowerMsg === p || lowerMsg.startsWith(p + ' ') || lowerMsg.endsWith(' ' + p))
         if (isUITrigger) {
             await openFrankyMiniapp(handler)
@@ -408,15 +408,62 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
 }
 
 // ============================================================================
-// BOT INITIALIZATION
+// BOT INITIALIZATION (with retry for Base RPC rate limits / transient errors)
 // ============================================================================
+
+const BOT_INIT_RETRIES = 5
+const BOT_INIT_BACKOFF_MS = 3000
+
+function isRetryableInitError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const msg = err.message
+  const raw = (err as { rawMessage?: string }).rawMessage ?? ''
+  return (
+    msg?.includes('Connect') ||
+    msg?.includes('CANNOT_CONNECT') ||
+    msg?.includes('429') ||
+    msg?.includes('Bandwidth limit exceeded') ||
+    msg?.includes('Too Many Requests') ||
+    raw.includes('429') ||
+    raw.includes('Bandwidth limit exceeded') ||
+    (err as { code?: number }).code === 9
+  )
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function initBotWithRetry(): Promise<Awaited<ReturnType<typeof makeTownsBot>>> {
+  return makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands: commandMetadata })
+}
+
+async function makeTownsBotWithRetry(): Promise<Awaited<ReturnType<typeof makeTownsBot>>> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= BOT_INIT_RETRIES; attempt++) {
+    try {
+      const result = await initBotWithRetry()
+      if (attempt > 1) console.log(`[START] Bot initialized on attempt ${attempt}`)
+      return result
+    } catch (err) {
+      lastError = err
+      if (!isRetryableInitError(err) || attempt === BOT_INIT_RETRIES) throw err
+      const delay = BOT_INIT_BACKOFF_MS * Math.pow(2, attempt - 1)
+      console.warn(
+        `[START] Bot init attempt ${attempt}/${BOT_INIT_RETRIES} failed (Base RPC rate limit or transient error). Retrying in ${delay}ms...`
+      )
+      await sleep(delay)
+    }
+  }
+  throw lastError
+}
 
 console.log('[START] loading commands from commands.ts')
 
 // Franky v2: use AniList as anime data provider
 setAnimeDataProvider(new AniListAnimeDataProvider())
 
-makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands: commandMetadata })
+makeTownsBotWithRetry()
     .then(async (initializedBot) => {
         bot = initializedBot
         console.log('[DEBUG] bot keys:', Object.keys(bot ?? {}))
@@ -514,14 +561,17 @@ makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands:
         }
     })
     .catch((error) => {
-        // Suppress ConnectError - it's non-fatal
-        const isConnectError = error instanceof Error && 
-            (error.message?.includes('Connect') || 
-             error.constructor?.name === 'ConnectError' ||
-             error.stack?.includes('connect-error'))
-        
-        if (isConnectError) {
-            console.warn('⚠️ Connection warning (non-fatal, bot may still work)')
+        const isRateLimitOrConnect =
+            isRetryableInitError(error) ||
+            (error instanceof Error &&
+                (error.message?.includes('Connect') ||
+                    error.constructor?.name === 'ConnectError' ||
+                    error.stack?.includes('connect-error')))
+        if (isRateLimitOrConnect) {
+            console.error(
+                '⚠️ Bot initialization failed after retries (Base RPC rate limit or connection). ' +
+                    'Set BASE_MAINNET_RPC_URL (or VITE_BASE_MAINNET_RPC_URL) to a provider with higher limits (e.g. Alchemy, Infura) to fix.'
+            )
         } else {
             console.error('⚠️ Bot initialization error:', error instanceof Error ? error.message : String(error))
         }
