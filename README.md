@@ -1,26 +1,23 @@
-# Quickstart Bot
+# Franky — Towns Protocol Bot
 
-A simple, barebones bot example perfect for beginners learning to build Towns bots.
+**AI agents and developers:** See **[AGENTS.md](./AGENTS.md)** for the canonical reference. It covers stateless event processing, handler payloads, Bot Actions API, storage strategy, and patterns. Use it when editing this codebase.
+
+---
+
+A Towns bot for anime communities (recommendations, airings, quotes, miniapp). Built on the same patterns as the Quickstart example.
 
 ## What This Bot Does
 
-This bot demonstrates the basic functionality of a Towns bot:
+- **Anime**: Recommendations, airings, quotes, trivia; natural-language agent (FRANKY_V2); Franky miniapp launcher
+- **Slash commands**: `/help`, `/franky`, `/airing`, `/recommend`, `/quote`, `/guess_anime`, `/ban`, `/mute`, etc.
+- **Greetings & mentions**: Responds to "Franky", "hi Franky", and @mentions
+- **Moderation**: Admin-only ban/mute (per AGENTS.md permission patterns)
 
-- **Greetings**: Responds to "hello" with a friendly greeting
-- **Help**: Shows available commands when someone says "help"
-- **Ping/Pong**: Classic ping-pong response
-- **Time**: Shows current time when requested
-- **Reactions**: Adds thumbs up reaction when someone mentions "react"
-- **Reaction Responses**: Responds to wave emoji reactions
+## Architecture (per AGENTS.md)
 
-## Features Demonstrated
-
-- Message handling with keyword detection
-- Sending messages back to channels
-- Adding emoji reactions to messages
-- Responding to emoji reactions from users
-- Setting bot username and display name
-- Basic user filtering (ignoring bot's own messages)
+- **Stateless**: Each webhook event is isolated; no message history or thread content. Context (e.g. trivia state) is kept in memory (see [Storage Strategy](AGENTS.md#storage-strategy-decision-matrix) for production).
+- **Event flow**: Webhook → JWT → decrypt → route (slash vs `onMessage`) → handler → response.
+- **User IDs**: Always `0x...` addresses; mentions use `mentions: [{ userId, displayName }]` and message text `<@userId>`.
 
 ## Setup
 
@@ -37,26 +34,21 @@ This bot demonstrates the basic functionality of a Towns bot:
 
 ## Usage
 
-Once the bot is running in a channel, try these commands:
+Once the bot is running in a channel:
 
-- Type "hello" → Bot will greet you
-- Type "help" → Bot will show available commands
-- Type "ping" → Bot will respond with "Pong!"
-- Type "time" → Bot will show current time
-- Type "react" → Bot will add a thumbs up reaction
-- React with 👋 to any message → Bot will respond
+- **Slash commands**: `/help`, `/franky`, `/airing`, `/recommend`, `/quote`
+- Type **Franky** or **open franky** → Opens the anime miniapp
+- Mention @Franky and ask in natural language (with `FRANKY_V2=true`): e.g. *what should I watch*, *something like Attack on Titan*
+- **Admin**: `/ban @user`, `/mute @user` (require admin permission per AGENTS.md)
 
 ## Code Structure
 
-The bot is implemented as a single file (`src/index.ts`) with:
+- **`src/index.ts`**: Bot init (with retry for Base RPC), `onMessage` / `onSlashCommand` routing, safeSendMessage, webhook server.
+- **`src/commands.ts`**: Slash command definitions and execution (payload shape matches AGENTS.md). Uses `bot.sendMessage()` from a timer for trivia timeout (per "Using Bot Methods Outside Handlers").
+- **`src/towns/`**, **`src/agent/`**: V2 agent and Towns handlers.
+- **`miniapp/`**: Franky Anime UI (Farcaster Mini App SDK, AniList, neon theme).
 
-1. **Bot Creation**: Initialize the bot with environment variables
-2. **Channel Join Handler**: Set bot name when joining channels
-3. **Message Handler**: Process incoming messages and respond appropriately
-4. **Reaction Handler**: Respond to emoji reactions from users
-5. **Server Setup**: Start the bot HTTP server
-
-This is the perfect starting point for building more complex bots!
+For full handler reference, types, and patterns, see **[AGENTS.md](./AGENTS.md)**.
 
 ## Franky Mini App (AnimeTown)
 

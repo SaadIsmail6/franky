@@ -4,16 +4,26 @@ import { fetchUpcomingAiring, formatAiringList, type AiringItem } from './integr
 import { parseRecommendationQuery, fetchRecommendations, formatRecommendations } from './integrations/recommendations'
 import { openFrankyMiniapp, getOpenFrankyUILinkSuffix } from './utils/openFrankyMiniapp'
 
-type Mention = {
+/**
+ * Mention shape per AGENTS.md: userId (0x address) + displayName.
+ * Use with sendMessage(..., { mentions: [{ userId, displayName }] }) and message text "<@userId>".
+ */
+export type Mention = {
     userId: string
     displayName: string
 }
 
+/**
+ * Slash command payload. Extends BasePayload (userId, spaceId, channelId, eventId, createdAt)
+ * with command, args, mentions, replyId?, threadId?.
+ * @see AGENTS.md "onSlashCommand - Command Handler"
+ */
 export interface SlashCommandEventPayload {
     channelId: string
     userId: string
     spaceId: string
     eventId: string
+    createdAt?: Date
     command: string
     args: string[]
     mentions: Mention[]
@@ -68,6 +78,7 @@ export function resolveBotIdentity(currentBot: Bot<any, any> | null): { appId: s
     }
 }
 
+/** In-memory game state (per AGENTS.md: use DB for serverless or free-tier hosting that sleeps). */
 export const activeTriviaGames = new Map<
     string,
     {
@@ -523,7 +534,9 @@ export const commands: CommandDefinition[] = [
             try {
                 await handler.ban(userToBan, event.spaceId)
                 console.log(`[${new Date().toISOString()}] 🔨 Banned ${userToBan} by ${event.userId}`)
-                await safeSendMessage(handler, event.channelId, `✅ Banned <@${userToBan}>`)
+                await safeSendMessage(handler, event.channelId, `✅ Banned <@${userToBan}>`, {
+                    mentions: [{ userId: userToBan, displayName: event.mentions[0]?.displayName ?? 'User' }],
+                })
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Unknown error'
                 await safeSendMessage(handler, event.channelId, `❌ Failed: ${message}`)
@@ -545,7 +558,9 @@ export const commands: CommandDefinition[] = [
                 return
             }
             console.log(`[${new Date().toISOString()}] 🔇 Muted ${userToMute} by ${event.userId}`)
-            await safeSendMessage(handler, event.channelId, `🔇 Muted <@${userToMute}>\nNote: Actual muting coming soon.`)
+            await safeSendMessage(handler, event.channelId, `🔇 Muted <@${userToMute}>\nNote: Actual muting coming soon.`, {
+                mentions: [{ userId: userToMute, displayName: event.mentions[0]?.displayName ?? 'User' }],
+            })
         },
     },
     {

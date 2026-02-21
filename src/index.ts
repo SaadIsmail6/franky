@@ -48,7 +48,12 @@ const describeCommand = (name: string) => {
 
 /**
  * Franky - Towns Protocol Bot for Anime Communities
- * Webhook handler hands off directly to SDK without preprocessing
+ *
+ * Architecture (see AGENTS.md):
+ * - Stateless event processing: each webhook is isolated; no message history or thread content.
+ * - Slash commands and onMessage are mutually exclusive; store context externally (e.g. activeTriviaGames) when needed.
+ * - User IDs are 0x addresses; mentions use { userId, displayName } and message text "<@userId>".
+ * - Webhook flow: POST /webhook → JWT → decrypt → route → handler → response.
  */
 
 // ============================================================================
@@ -225,6 +230,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
         return true
     }
 
+    // onMessage: base payload + message, replyId?, threadId?, isMentioned, mentions (AGENTS.md)
     bot.onMessage(async (handler, { message, channelId, eventId, userId, spaceId, isMentioned, mentions, replyId, threadId }) => {
         const preview = (message || '').slice(0, 80)
         console.log(`[EVENT] channel=${channelId || ''} text="${preview}"`)
@@ -300,7 +306,7 @@ function setupBotHandlers(bot: Awaited<ReturnType<typeof makeTownsBot>>) {
             clearTimeout(game.timeoutId)
             activeTriviaGames.delete(channelId)
             await safeSendMessage(handler, channelId, `✅ Correct, <@${userId}>! Answer: ${game.answer}`, {
-                mentions: [{ userId, displayName: 'Winner', mentionBehavior: { case: undefined } }],
+                mentions: [{ userId, displayName: 'Winner' }],
             })
             return
         }
