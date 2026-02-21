@@ -1,1545 +1,1733 @@
-# AGENTS.md
+# Towns Protocol Bot SDK Reference
 
-This file provides comprehensive guidance to AI agents (Claude Code, GitHub Copilot, etc.) for building Towns Protocol bots.
+> Complete reference for building Towns Protocol bots with @towns-protocol/bot SDK
 
-## Quick Start for AI Agents
+**Version**: 2.2 | **Updated**: December 2025 | **Lines**: ~1,620 | **Language**: TypeScript
 
-To build a bot, you need:
-1. **APP_PRIVATE_DATA** - Bot authentication credentials (base64 encoded)
-2. **JWT_SECRET** - Webhook security token
-3. **Event handlers** - Functions that respond to Towns events
-4. **Deployment environment** - Server to host the webhook endpoint
+---
 
-## Critical Architecture Concepts
+## 0. LLM Instructions
 
-### STATELESS EVENT PROCESSING - MOST IMPORTANT
+**Role**: Towns Protocol development assistant with expert knowledge of bot and miniapp development.
 
-**The bot framework is completely stateless. Each event is isolated:**
+**Required Behavior**:
+1. Use section numbers (e.g., "See §4.2") to cite information
+2. Search keyword lists to locate topics quickly
+3. Check Quick Reference (§1) before reading full sections
+4. **BEFORE implementing any feature, search this document for relevant sections**
+5. **For miniapps: ALWAYS use §15 and Appendix B.4 template - never invent SDK methods**
+6. Provide complete TypeScript code with proper imports
+7. Never invent API methods not documented here
 
-- **NO message history** - Cannot retrieve previous messages
-- **NO thread context** - Only get `threadId`, not original message content
-- **NO reply context** - Only get `replyId`, not the message being replied to
-- **NO conversation memory** - Each webhook call is independent
-- **NO user session** - Cannot track users across events
+**Critical Rules**:
+- User IDs are ALWAYS Ethereum addresses (0x...)
+- Bots have TWO wallets: gas wallet (MUST fund with Base ETH) + treasury (optional, for transfers)
+- Interactive requests use `type` property (e.g., `type: 'form'`, `type: 'transaction'`)
+- Private interactions use `recipient: userId` in payload
+- Payment verification: ALWAYS verify transactions on-chain with `waitForTransactionReceipt` before granting access (see §10.5)
 
-**Implications:**
-- You MUST store context externally if needed (database, in-memory)
-- Design interactions that work with single events
-- Cannot implement "conversation flows" without storage
+**Common Workflows**:
+- **Bot with commands**: §4.3 initialization → §8.1 define commands → §8.2 handle commands
+- **Interactive forms**: §9.1 send form → §9.3 handle response
+- **Payment acceptance**: §10.1 request transaction → §10.5 verify on-chain → grant access
+- **Bot with miniapp**: Add `/dashboard` command (§2.10) → §15.1 meta tag → §15.2 SDK init → B.4 template
+- **Blockchain operations**: §12.2 execute transaction → verify receipt
 
-### Event Flow Architecture
+---
 
-```
-User Action → Towns Server → Webhook POST → JWT Verify → Decrypt → Route → Handler → Response
-```
+## 1. Quick Reference
 
-1. **Webhook Reception**: Encrypted events arrive via POST to `/webhook`
-2. **JWT Verification**: Validates request authenticity
-3. **Decryption**: Framework auto-decrypts using group sessions
-4. **Event Routing**: 
-   - Slash commands → Direct handler call (no message event)
-   - All other messages → `onMessage` handler
-5. **Handler Execution**: Your code processes the decrypted payload
+Keywords: API reference, method signatures, quick lookup, cheat sheet
 
-## Complete Event Handler Reference
+### 1.1 Handler Methods (inside event handlers)
 
-### Base Payload (ALL Events Include These)
+| Method | Signature | Notes |
+|--------|-----------|-------|
+| `sendMessage` | `(channelId, text, opts?) → { eventId }` | opts: `{ threadId?, replyId?, mentions?, attachments?, ephemeral? }` |
+| `editMessage` | `(channelId, eventId, text, opts?)` | Bot's own messages only |
+| `removeEvent` | `(channelId, eventId)` | Bot's own messages only |
+| `adminRemoveEvent` | `(channelId, eventId)` | Any message, needs Permission.Redact |
+| `sendReaction` | `(channelId, messageId, emoji)` | |
+| `pinMessage` | `(channelId, eventId, streamEvent)` | |
+| `unpinMessage` | `(channelId, eventId)` | |
+| `sendInteractionRequest` | `(channelId, payload)` | Forms, transactions, signatures |
+| `sendTip` | `({ userId, amount, messageId, channelId, currency? })` | currency defaults to ETH |
+| `hasAdminPermission` | `(userId, spaceId) → boolean` | |
+| `checkPermission` | `(channelId, userId, Permission) → boolean` | |
+| `ban` | `(userId, spaceId)` | Needs ModifyBanning |
+| `unban` | `(userId, spaceId)` | Needs ModifyBanning |
+| `createChannel` | `(spaceId, opts) → channelId` | opts: `{ name, description?, autojoin?, hideUserJoinLeaveEvents? }` |
+
+### 1.2 Bot Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `bot.viem` | ViemClient | Viem client for blockchain |
+| `bot.viem.account` | Account | Gas wallet (EOA) - signs & pays fees - **MUST fund with Base ETH** |
+| `bot.appAddress` | string | Treasury (Smart Account) - optional, holds funds for transfers |
+| `bot.botId` | string | Bot identifier |
+
+### 1.3 Key Imports
 
 ```typescript
-{
-  userId: string      // Hex address with 0x prefix (e.g., "0x1234...")
-  spaceId: string     // Space identifier
-  channelId: string   // Channel/stream identifier  
-  eventId: string     // Unique event ID (use for replies/threads)
-  createdAt: Date     // Event timestamp (use for latency: Date.now() - createdAt)
+// Bot SDK
+import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
+import type { BotCommand, BotHandler } from '@towns-protocol/bot'
+import simpleAppAbi from '@towns-protocol/bot/simpleAppAbi'
+
+// Permissions
+import { Permission, Rules } from '@towns-protocol/web3'
+
+// Viem
+import { parseEther, formatEther, encodeFunctionData, erc20Abi, zeroAddress } from 'viem'
+import { readContract, waitForTransactionReceipt } from 'viem/actions'
+import { execute } from 'viem/experimental/erc7821'
+```
+
+### 1.4 Token Addresses (Base Mainnet)
+
+```typescript
+import { zeroAddress } from 'viem'
+
+const TOKENS = {
+  ETH: zeroAddress,  // Native ETH (0x0000000000000000000000000000000000000000)
+  USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+  USDT: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2',
+  WETH: '0x4200000000000000000000000000000000000006',
+  TOWNS: '0x00000000A22C618fd6b4D7E9A335C4B96B189a38'
 }
 ```
 
-### `onMessage` - Primary Message Handler
+---
 
-**When it fires:** Any non-slash-command message (including mentions, replies, threads)
+## 2. Common Patterns
 
-**Full Payload:**
+Keywords: code snippets, examples, patterns, templates, copy-paste
+
+### 2.1 Send Message with Mention
+
 ```typescript
-{
-  ...basePayload,
-  message: string,           // Decrypted message text
-  replyId?: string,         // If reply: eventId of message being replied to
-  threadId?: string,        // If thread: eventId of thread's first message
-  isMentioned: boolean,     // True if bot was @mentioned
-  mentions: Array<{         // All mentioned users
-    userId: string,         // User's hex address
-    displayName: string     // Display name used in mention
-  }>
+await handler.sendMessage(channelId, `Hello <@${userId}>!`, {
+  mentions: [{ userId, displayName: 'User' }]
+})
+```
+
+### 2.2 Reply in Thread
+
+```typescript
+await handler.sendMessage(channelId, 'Reply text', { threadId: event.eventId })
+```
+
+### 2.3 Check Admin Before Action
+
+```typescript
+const isAdmin = await handler.hasAdminPermission(event.userId, event.spaceId)
+if (!isAdmin) {
+  await handler.sendMessage(event.channelId, '❌ Admin only')
+  return
 }
 ```
 
-**Common Patterns:**
+### 2.4 Get User's Wallet
+
 ```typescript
-bot.onMessage(async (handler, event) => {
-  // Mentioned bot
-  if (event.isMentioned) {
-    await handler.sendMessage(event.channelId, "You mentioned me!")
-  }
-  
-  // Thread message
-  if (event.threadId) {
-    // Note: You don't know what the original thread message said
-    await handler.sendMessage(event.channelId, "Continuing thread...", {
-      threadId: event.threadId
-    })
-  }
-  
-  // Reply to message
-  if (event.replyId) {
-    // Note: You don't know what message you're replying to
-    await handler.sendMessage(event.channelId, "I see you replied!")
-  }
-  
-  // Mentioned in thread (combine flags)
-  if (event.threadId && event.isMentioned) {
-    await handler.sendMessage(event.channelId, "Mentioned in thread!", {
-      threadId: event.threadId
-    })
-  }
-})
+import { getSmartAccountFromUserId } from '@towns-protocol/bot'
+const wallet = await getSmartAccountFromUserId(bot, { userId: event.userId })
 ```
 
-### `onSlashCommand` - Command Handler
-
-**When it fires:** User types `/command args`
-**IMPORTANT:** Does NOT trigger `onMessage` - they're mutually exclusive
-
-**Full Payload:**
-```typescript
-{
-  ...basePayload,
-  command: string,          // Command name (without /)
-  args: string[],          // Arguments split by spaces
-  mentions: Array<{        // Users mentioned in command
-    userId: string,
-    displayName: string
-  }>,
-  replyId?: string,        // If command was used in reply
-  threadId?: string        // If command was used in thread
-}
-```
-
-**Setup Required:**
-1. Define commands in `src/commands.ts`:
-```typescript
-export const commands = [
-  { name: "help", description: "Show help" },
-  { name: "poll", description: "Create a poll" }
-] as const
-```
-
-2. Pass to bot initialization:
-```typescript
-const bot = await makeTownsBot(privateData, jwtSecret, { commands })
-```
-
-3. Register handlers:
-```typescript
-bot.onSlashCommand("help", async (handler, event) => {
-  await handler.sendMessage(event.channelId, "Commands: /help, /poll")
-})
-
-bot.onSlashCommand("poll", async (handler, event) => {
-  const question = event.args.join(" ")
-  if (!question) {
-    await handler.sendMessage(event.channelId, "Usage: /poll <question>")
-    return
-  }
-  // Create poll...
-})
-```
-
-### `onReaction` - Reaction Handler
-
-**When it fires:** User adds emoji reaction to a message
-
-**Full Payload:**
-```typescript
-{
-  ...basePayload,
-  reaction: string,        // Emoji (e.g., "thumbsup", "❤️")
-  messageId: string        // EventId of message that got reaction
-}
-```
-
-**LIMITATION:** No access to the original message content!
-
-**Pattern - Reaction Voting System:**
-```typescript
-const polls = new Map() // messageId -> poll data
-
-bot.onMessage(async (handler, event) => {
-  if (event.message.startsWith("POLL:")) {
-    const sent = await handler.sendMessage(event.channelId, event.message)
-    polls.set(sent.eventId, {
-      question: event.message,
-      votes: { "thumbsup": 0, "thumbsdown": 0 }
-    })
-  }
-})
-
-bot.onReaction(async (handler, event) => {
-  const poll = polls.get(event.messageId)
-  if (poll && (event.reaction === "thumbsup" || event.reaction === "thumbsdown")) {
-    poll.votes[event.reaction]++
-    await handler.sendMessage(
-      event.channelId,
-      `Vote counted! thumbsup: ${poll.votes["thumbsup"]} thumbsdown: ${poll.votes["thumbsdown"]}`
-    )
-  }
-})
-```
-
-### `onMessageEdit` - Edit Handler
-
-**When it fires:** User edits their message
-
-**Full Payload:**
-```typescript
-{
-  ...basePayload,
-  refEventId: string,      // ID of edited message
-  message: string,         // New message content
-  replyId?: string,        // If edited message was a reply
-  threadId?: string,       // If edited message was in thread
-  isMentioned: boolean,    // If bot mentioned in edit
-  mentions: Array<{
-    userId: string,
-    displayName: string
-  }>
-}
-```
-
-**Use Case - Track Edit History:**
-```typescript
-const editHistory = new Map()
-
-bot.onMessageEdit(async (handler, event) => {
-  const history = editHistory.get(event.refEventId) || []
-  history.push({
-    content: event.message,
-    editedAt: new Date(),
-    editedBy: event.userId
-  })
-  editHistory.set(event.refEventId, history)
-  
-  if (event.isMentioned && !history.some(h => h.content.includes(bot.botId))) {
-    // Bot was mentioned in edit but not original
-    await handler.sendMessage(event.channelId, "I see you added me to your message!")
-  }
-})
-```
-
-### `onRedaction` / `onEventRevoke` - Deletion Handlers
-
-**When it fires:** Message is deleted (by user or admin)
-
-**Full Payload:**
-```typescript
-{
-  ...basePayload,
-  refEventId: string       // ID of deleted message
-}
-```
-
-**Message Deletion Types:**
-
-1. **User Deletion** - Users can delete their own messages using `removeEvent`
-2. **Admin Redaction** - Admins with `Permission.Redact` can delete any message using `adminRemoveEvent`
-3. **Bot Deletion** - Bots can delete their own messages using `removeEvent`
-
-**Use Case - Cleanup Related Data:**
-```typescript
-bot.onRedaction(async (handler, event) => {
-  // Clean up any stored data for this message
-  messageCache.delete(event.refEventId)
-  polls.delete(event.refEventId)
-  editHistory.delete(event.refEventId)
-  
-  // Log who deleted what
-  console.log(`Message ${event.refEventId} was deleted by ${event.userId}`)
-})
-```
-
-**Implementing Message Deletion:**
-```typescript
-bot.onSlashCommand("delete", async (handler, event) => {
-  if (!event.replyId) {
-    await handler.sendMessage(event.channelId, "Reply to a message to delete it")
-    return
-  }
-  
-  // Check if user has redaction permission
-  const canRedact = await handler.checkPermission(
-    event.channelId,
-    event.userId,
-    Permission.Redact
-  )
-  
-  if (canRedact) {
-    // Admin can delete any message
-    await handler.adminRemoveEvent(event.channelId, event.replyId)
-    await handler.sendMessage(event.channelId, "Message deleted by admin")
-  } else {
-    // Regular users can only delete their own messages
-    // Bot would need to track message ownership to verify
-    await handler.sendMessage(event.channelId, "You can only delete your own messages")
-  }
-})
-```
-
-### `onTip` - Tip Handler
-
-**When it fires:** User sends cryptocurrency tip on a message
-
-**Full Payload:**
-```typescript
-{
-  ...basePayload,
-  messageId: string,       // Message that received tip
-  senderAddress: string,   // Sender's address
-  receiverAddress: string, // Receiver's address
-  amount: bigint,         // Amount in wei
-  currency: `0x${string}` // Token contract address
-}
-```
-
-**Use Case - Thank Donors:**
-```typescript
-bot.onTip(async (handler, event) => {
-  if (event.receiverAddress === bot.botId) {
-    const ethAmount = Number(event.amount) / 1e18
-    await handler.sendMessage(
-      event.channelId,
-      `Thank you for the ${ethAmount} ETH tip!`
-    )
-  }
-})
-```
-
-### `onChannelJoin` / `onChannelLeave` - Membership Handlers
-
-**When it fires:** User joins or leaves channel
-
-**Payload:** Base payload only
-
-**Use Case - Welcome Messages:**
-```typescript
-bot.onChannelJoin(async (handler, event) => {
-  await handler.sendMessage(
-    event.channelId,
-    `Welcome <@${event.userId}> to the channel!`
-  )
-})
-```
-
-### `onStreamEvent` - Raw Event Handler
-
-**When it fires:** ANY stream event (advanced use)
-
-**Payload:**
-```typescript
-{
-  ...basePayload,
-  event: ParsedEvent      // Raw protocol buffer event
-}
-```
-
-## Handler Combination Patterns
-
-### Pattern 1: Contextual Responses
-
-Store message context to enable rich interactions:
+### 2.5 Send Button Form
 
 ```typescript
-const messageContext = new Map()
-
-bot.onMessage(async (handler, event) => {
-  // Store every message for context
-  messageContext.set(event.eventId, {
-    content: event.message,
-    author: event.userId,
-    timestamp: event.createdAt
-  })
-  
-  // Reply with context
-  if (event.replyId) {
-    const original = messageContext.get(event.replyId)
-    if (original?.content.includes("help")) {
-      await handler.sendMessage(event.channelId, "I see you're replying to a help request!")
-    }
-  }
-})
-
-bot.onReaction(async (handler, event) => {
-  const original = messageContext.get(event.messageId)
-  if (original?.content.includes("vote") && event.reaction === "YES") {
-    await handler.sendMessage(event.channelId, "Vote recorded!")
-  }
-})
-```
-
-### Pattern 2: Multi-Step Workflows
-
-Track user state across events:
-
-```typescript
-const userWorkflows = new Map()
-
-bot.onSlashCommand("setup", async (handler, event) => {
-  userWorkflows.set(event.userId, { 
-    step: "awaiting_name",
-    channelId: event.channelId 
-  })
-  await handler.sendMessage(event.channelId, "What's your project name?")
-})
-
-bot.onMessage(async (handler, event) => {
-  const workflow = userWorkflows.get(event.userId)
-  if (!workflow) return
-  
-  switch(workflow.step) {
-    case "awaiting_name":
-      workflow.projectName = event.message
-      workflow.step = "awaiting_description"
-      await handler.sendMessage(event.channelId, "Describe your project:")
-      break
-      
-    case "awaiting_description":
-      workflow.description = event.message
-      await handler.sendMessage(
-        event.channelId,
-        `Project "${workflow.projectName}" created!`
-      )
-      userWorkflows.delete(event.userId)
-      break
-  }
-})
-```
-
-### Pattern 3: Thread Conversations
-
-Maintain thread context:
-
-```typescript
-const threadContexts = new Map()
-
-bot.onMessage(async (handler, event) => {
-  if (event.threadId) {
-    // In a thread
-    let context = threadContexts.get(event.threadId)
-    if (!context) {
-      context = { messages: [], participants: new Set() }
-      threadContexts.set(event.threadId, context)
-    }
-    
-    context.messages.push({
-      userId: event.userId,
-      message: event.message,
-      timestamp: event.createdAt
-    })
-    context.participants.add(event.userId)
-    
-    // Respond based on thread history
-    if (context.messages.length === 5) {
-      await handler.sendMessage(
-        event.channelId,
-        "This thread is getting long! Consider starting a new one.",
-        { threadId: event.threadId }
-      )
-    }
-  } else if (event.message.includes("?")) {
-    // Start a help thread for questions
-    const response = await handler.sendMessage(
-      event.channelId,
-      "Let me help with that!",
-      { threadId: event.eventId }
-    )
-    
-    threadContexts.set(event.eventId, {
-      type: "help",
-      originalQuestion: event.message,
-      helper: bot.botId
-    })
-  }
-})
-```
-
-## Bot Actions API Reference
-
-All handlers receive a `handler` parameter with these methods:
-
-### Exported Types for Building Abstractions
-
-The `@towns-protocol/bot` package exports several types useful for building abstractions:
-
-**`BotHandler`** - Type representing all methods available on the `handler` parameter. Use this when building helper functions, middleware, or utilities that need to accept a handler as a parameter.
-
-**`BasePayload`** - Type containing common fields present in all event payloads (`userId`, `spaceId`, `channelId`, `eventId`, `createdAt`). Use this when building generic event processing utilities that work across different event types.
-
-**`MessageOpts`** - Type defining options for sending messages (threadId, replyId, mentions, attachments, ephemeral). Use this when building message utilities that need to accept or manipulate message sending options.
-
-### Message Operations
-
-```typescript
-// Send a message
-await handler.sendMessage(
-  channelId: string,
-  message: string,
-  opts?: {
-    threadId?: string,      // Continue a thread
-    replyId?: string,       // Reply to a message
-    mentions?: Array<{      // Mention users
-      userId: string,
-      displayName: string
-    }>,
-    attachments?: Array<    // Add attachments (see Sending Attachments section)
-      | { type: 'image', url: string, alt?: string }
-    >
-  }
-)
-
-// Edit a message (bot's own messages only)
-await handler.editMessage(
-  channelId: string,
-  messageId: string,       // Your message's eventId
-  newMessage: string
-)
-
-// Add reaction
-await handler.sendReaction(
-  channelId: string,
-  messageId: string,       // Message to react to
-  reaction: string         // Emoji
-)
-```
-
-## Sending Attachments
-
-The bot framework supports two types of attachments with automatic validation and encryption.
-
-### Image Attachments from URLs
-
-Send images by URL with automatic validation and dimension detection:
-
-```typescript
-bot.onSlashCommand("showcase", async (handler, event) => {
-  await handler.sendMessage(event.channelId, "Product showcase:", {
-    attachments: [{
-      type: 'image',
-      url: 'https://example.com/product.jpg',
-      alt: 'Our flagship product in vibrant colors'
-    }]
-  })
-})
-```
-
-### Multiple Attachments
-
-Send multiple attachments of mixed types:
-
-```typescript
-// GIF Search Bot
-bot.onSlashCommand("gif", async (handler, event) => {
-  const query = event.args.join(" ")
-  const gifUrls = await searchGifs(query)
-
-  await handler.sendMessage(event.channelId, `Results for "${query}":`, {
-    attachments: gifUrls.slice(0, 5).map(url => ({
-      type: 'image',
-      url,
-      alt: `GIF result for ${query}`
-    }))
-  })
-})
-```
-
-### Real-World Examples
-
-**Weather Bot with Maps:**
-```typescript
-bot.onSlashCommand("weather", async (handler, event) => {
-  const location = event.args.join(" ")
-  const weatherData = await getWeatherData(location)
-
-  await handler.sendMessage(
-    event.channelId,
-    `Weather in ${location}: ${weatherData.temp}°F, ${weatherData.conditions}`,
-    {
-      attachments: [{
-        type: 'image',
-        url: weatherData.radarMapUrl,
-        alt: `Radar map for ${location}`
-      }]
-    }
-  )
-})
-```
-
-### Important Notes
-
-- Invalid URLs (404, network errors) are gracefully skipped - message still sends
-- URL images are fetched synchronously during `sendMessage`
-- Multiple URL attachments are processed sequentially
-
-### Chunked Media Attachments (Binary Data)
-
-Send raw binary data (videos, screenshots, generated images) using `type: 'chunked'`. The framework handles encryption, chunking (1.2MB per chunk), and retries automatically.
-
-**Video File Example:**
-```typescript
-import { readFileSync } from 'node:fs'
-
-bot.onSlashCommand("rickroll", async (handler, { channelId }) => {
-  // Load video file as binary data
-  const videoData = readFileSync('./rickroll.mp4')
-
-  await handler.sendMessage(channelId, "Never gonna give you up!", {
-    attachments: [{
-      type: 'chunked',
-      data: videoData,           // Uint8Array
-      filename: 'rickroll.mp4',
-      mimetype: 'video/mp4',     // Required for Uint8Array
-      width: 1920,               // Optional (not auto-detected for videos)
-      height: 1080               // Optional (not auto-detected for videos)
-    }]
-  })
-})
-```
-
-**Screenshot Example (Canvas):**
-```typescript
-import { createCanvas } from '@napi-rs/canvas'
-
-bot.onSlashCommand("chart", async (handler, { channelId, args }) => {
-  const value = parseInt(args[0]) || 50
-
-  // Generate chart image
-  const canvas = createCanvas(400, 300)
-  const ctx = canvas.getContext('2d')
-
-  ctx.fillStyle = '#2c3e50'
-  ctx.fillRect(0, 0, 400, 300)
-  ctx.fillStyle = '#3498db'
-  ctx.fillRect(50, 300 - value * 2, 300, value * 2)
-  ctx.fillStyle = '#fff'
-  ctx.font = '24px sans-serif'
-  ctx.fillText(`Value: ${value}`, 150, 50)
-
-  // Export as PNG Blob
-  const blob = await canvas.encode('png')
-
-  await handler.sendMessage(channelId, "Your chart:", {
-    attachments: [{
-      type: 'chunked',
-      data: blob,                // Blob (no mimetype needed)
-      filename: 'chart.png',
-      width: 400,                // Optional (auto-detected for images)
-      height: 300                // Optional (auto-detected for images)
-    }]
-  })
-})
-```
-
-**Screenshot Example (Raw PNG Data):**
-```typescript
-bot.onSlashCommand("screenshot", async (handler, { channelId }) => {
-  // Capture screen using your preferred library
-  const screenshotBuffer = await captureScreen()
-
-  await handler.sendMessage(channelId, "Current screen:", {
-    attachments: [{
-      type: 'chunked',
-      data: screenshotBuffer,    // Uint8Array or Buffer
-      filename: 'screenshot.png',
-      mimetype: 'image/png'      // Required for Uint8Array
-      // width/height auto-detected for image/* mimetypes
-    }]
-  })
-})
-```
-
-**Mixed Attachments Example:**
-```typescript
-// Combine URL images with chunked media
-await handler.sendMessage(channelId, "Product comparison:", {
-  attachments: [
-    {
-      type: 'image',
-      url: 'https://example.com/product-a.jpg',
-      alt: 'Product A'
-    },
-    {
-      type: 'chunked',
-      data: generatedComparisonChart,  // Binary data
-      filename: 'comparison.png',
-      mimetype: 'image/png'
-    }
+await handler.sendInteractionRequest(channelId, {
+  type: 'form',
+  id: 'my-form',
+  components: [
+    { id: 'yes', type: 'button', label: 'Yes' },
+    { id: 'no', type: 'button', label: 'No' }
   ]
 })
 ```
 
-**Important Notes:**
-- **Uint8Array requires `mimetype`**: Must specify `mimetype` when using Uint8Array data
-- **Blob mimetype is automatic**: Blob objects already contain mimetype information
-- **Image dimensions auto-detected**: For image mimetypes (`image/*`), dimensions are detected automatically
-- **Video/other dimensions manual**: For videos and other media, specify `width`/`height` manually if needed
-```
+### 2.6 Handle Button Response
 
-### Message Deletion (Redaction)
-
-**Two types of deletion:**
-
-1. **`removeEvent`** - Delete bot's own messages
 ```typescript
-// Bot deletes its own message
-const sentMessage = await handler.sendMessage(channelId, "Oops, wrong channel!")
-await handler.removeEvent(channelId, sentMessage.eventId)
-```
-
-2. **`adminRemoveEvent`** - Admin deletion (requires Permission.Redact)
-```typescript
-// Admin bot deletes any message
-bot.onMessage(async (handler, event) => {
-  if (event.message.includes("inappropriate content")) {
-    // Check if bot has redaction permission
-    const canRedact = await handler.checkPermission(
-      event.channelId,
-      bot.botId,  // Check bot's permission
-      Permission.Redact
-    )
-    
-    if (canRedact) {
-      // Delete the inappropriate message
-      await handler.adminRemoveEvent(event.channelId, event.eventId)
-      await handler.sendMessage(event.channelId, "Message removed for violating guidelines")
-    }
-  }
-})
-```
-
-**Important Notes:**
-- `removeEvent` only works for messages sent by the bot itself
-- `adminRemoveEvent` requires the bot to have `Permission.Redact` in the space
-- Deleted messages trigger `onRedaction` event for all bots
-- Users can always delete their own messages through the UI
-
-### Permission System
-
-**Towns uses blockchain-based permissions that control what users can do in spaces.**
-
-#### Available Permissions
-```typescript
-Permission.Undefined         // No permission required
-Permission.Read              // Read messages in channels
-Permission.Write             // Send messages in channels
-Permission.Invite            // Invite users to space
-Permission.JoinSpace         // Join the space
-Permission.Redact            // Delete any message (admin redaction)
-Permission.ModifyBanning     // Ban/unban users (requires bot app to have this permission)
-Permission.PinMessage        // Pin/unpin messages
-Permission.AddRemoveChannels // Create/delete channels
-Permission.ModifySpaceSettings // Change space configuration
-Permission.React             // Add reactions to messages
-```
-
-#### Checking Permissions
-
-**`hasAdminPermission(userId, spaceId)`** - Quick check for admin status
-```typescript
-// Check if user is a space admin (has ModifyBanning permission)
-const isAdmin = await handler.hasAdminPermission(userId, spaceId)
-if (isAdmin) {
-  // User can ban, manage channels, modify settings
-}
-```
-
-**`checkPermission(streamId, userId, permission)`** - Check specific permission
-```typescript
-// Import Permission enum from SDK
-import { Permission } from '@towns-protocol/sdk'
-
-// Check if user can delete messages
-const canRedact = await handler.checkPermission(
-  channelId,
-  userId,
-  Permission.Redact
-)
-
-// Check if user can send messages
-const canWrite = await handler.checkPermission(
-  channelId,
-  userId,
-  Permission.Write
-)
-```
-
-#### Common Permission Patterns
-
-**Admin-Only Commands:**
-```typescript
-bot.onSlashCommand("ban", async (handler, event) => {
-  // Only admins can ban users
-  if (!await handler.hasAdminPermission(event.userId, event.spaceId)) {
-    await handler.sendMessage(event.channelId, "You don't have permission to ban users")
-    return
-  }
+bot.onInteractionResponse(async (handler, event) => {
+  if (event.response.payload.content?.case !== 'form') return
+  const form = event.response.payload.content.value
+  if (form.id !== 'my-form') return
   
-  const userToBan = event.mentions[0]?.userId || event.args[0]
-  if (userToBan) {
-    try {
-      // Bot must have ModifyBanning permission for this to work
-      const result = await handler.ban(userToBan, event.spaceId)
-      await handler.sendMessage(event.channelId, `Successfully banned user ${userToBan}`)
-    } catch (error) {
-      await handler.sendMessage(event.channelId, `Failed to ban: ${error.message}`)
-    }
-  }
-})
-
-bot.onSlashCommand("unban", async (handler, event) => {
-  if (!await handler.hasAdminPermission(event.userId, event.spaceId)) {
-    await handler.sendMessage(event.channelId, "You don't have permission to unban users")
-    return
-  }
-  
-  const userToUnban = event.args[0]
-  if (userToUnban) {
-    try {
-      // Bot must have ModifyBanning permission for this to work
-      const result = await handler.unban(userToUnban, event.spaceId)
-      await handler.sendMessage(event.channelId, `Successfully unbanned user ${userToUnban}`)
-    } catch (error) {
-      await handler.sendMessage(event.channelId, `Failed to unban: ${error.message}`)
+  for (const c of form.components) {
+    if (c.component.case === 'button' && c.id === 'yes') {
+      await handler.sendMessage(event.channelId, 'You clicked Yes!')
     }
   }
 })
 ```
 
-**Permission-Based Features:**
-```typescript
-bot.onMessage(async (handler, event) => {
-  if (event.message.startsWith("!delete")) {
-    // Check if user can redact messages
-    const canRedact = await handler.checkPermission(
-      event.channelId,
-      event.userId,
-      Permission.Redact
-    )
-    
-    if (!canRedact) {
-      await handler.sendMessage(event.channelId, "You don't have permission to delete messages")
-      return
-    }
-    
-    // Delete the referenced message
-    const messageId = event.replyId // Assuming they replied to the message to delete
-    if (messageId) {
-      await handler.adminRemoveEvent(event.channelId, messageId)
-    }
-  }
-})
-```
-
-### Web3 Operations
-
-Bot exposes viem client and app address for direct Web3 interactions:
-
-```typescript
-bot.viem        // Viem client with Account for contract interactions
-bot.appAddress   // Bot's app contract address (SimpleAccount)
-```
-
-**Reading from Contracts:**
-
-Use `readContract` for reading from any contract:
+### 2.7 Read Contract
 
 ```typescript
 import { readContract } from 'viem/actions'
-import simpleAppAbi from '@towns-protocol/bot/simpleAppAbi'
-
-// Read from any contract
-const owner = await readContract(bot.viem, {
-  address: bot.appAddress,
-  abi: simpleAppAbi,
-  functionName: 'moduleOwner',
-  args: []
+const balance = await readContract(bot.viem, {
+  address: tokenAddress,
+  abi: erc20Abi,
+  functionName: 'balanceOf',
+  args: [userAddress]
 })
 ```
 
-**Writing to Bot's Own Contract:**
-
-Use `writeContract` ONLY for the bot's SimpleAccount contract operations:
+### 2.8 Execute Transaction (Bot Wallet)
 
 ```typescript
-import { writeContract, waitForTransactionReceipt } from 'viem/actions'
-import simpleAppAbi from '@towns-protocol/bot/simpleAppAbi'
-import { parseEther, zeroAddress } from 'viem'
-
-// Only for SimpleAccount contract operations
-const hash = await writeContract(bot.viem, {
+import { execute } from 'viem/experimental/erc7821'
+const hash = await execute(bot.viem, {
   address: bot.appAddress,
-  abi: simpleAppAbi,
-  functionName: 'sendCurrency',
-  args: [recipientAddress, zeroAddress, parseEther('0.01')]
+  account: bot.viem.account,
+  calls: [{ to: targetAddress, abi, functionName: 'transfer', args: [...] }]
+})
+```
+
+### 2.9 Send Miniapp
+
+```typescript
+await handler.sendMessage(channelId, 'Open app:', {
+  attachments: [{ type: 'miniapp', url: 'https://your-app.com/miniapp.html' }]
+})
+```
+
+### 2.10 Dashboard Command (Miniapp)
+
+When your bot has a miniapp dashboard, add a command so users can easily open it:
+
+```typescript
+bot.onSlashCommand('dashboard', async (handler, event) => {
+  await handler.sendMessage(event.channelId, 'Open your dashboard:', {
+    attachments: [{
+      type: 'miniapp',
+      url: process.env.MINIAPP_URL || 'https://your-app.com/miniapp.html'
+    }]
+  })
+})
+```
+
+### 2.11 Welcome New User
+
+```typescript
+bot.onChannelJoin(async (handler, event) => {
+  await handler.sendMessage(event.channelId, `Welcome <@${event.userId}>! 👋`, {
+    mentions: [{ userId: event.userId, displayName: 'User' }]
+  })
+})
+```
+
+---
+
+## 3. Index
+
+| § | Section | Keywords |
+|---|---------|----------|
+| 4 | Architecture & Setup | initialization, wallets, gas, treasury, deployment |
+| 5 | Message Forwarding | modes, all messages, mentions, filtering |
+| 6 | Event Handlers | onMessage, onSlashCommand, onReaction, onTip, onStreamEvent |
+| 7 | Messaging API | sendMessage, mentions, threads, attachments, markdown |
+| 8 | Slash Commands | /commands, arguments, paid commands, x402 |
+| 9 | Interactive Components | forms, buttons, text inputs, public/private, polls |
+| 10 | Transaction Requests | user transactions, ERC20, token transfers, parameters |
+| 11 | Signature Requests | EIP-712, personal_sign, authentication, parameters |
+| 12 | Blockchain Operations | readContract, execute, writeContract, tips |
+| 13 | Permissions & Moderation | Permission, ban, unban, admin, React, Invite |
+| 14 | Roles & Token Gating | createRole, Rules API, NFT gating |
+| 15 | Miniapps | iframe, SDK, HTML, wallet provider, multi-wallet |
+| 16 | Linked Wallets | smart accounts, EOA, linkedWallets |
+| 17 | Snapshot Data | cache, getChannelInception, getUserMemberships |
+| 18 | External Integrations | webhooks, timers, Hono routes |
+| 19 | Troubleshooting | errors, debugging, common mistakes |
+| B | Full Templates | complete bot examples, miniapp template |
+
+---
+
+## 4. Architecture & Setup
+
+Keywords: initialization, bot wallets, gas wallet, treasury, makeTownsBot, deployment, environment
+
+### 4.1 Bot Wallet Architecture
+
+Every bot has TWO addresses:
+
+| Property | Type | Role | Fund With |
+|----------|------|------|-----------|
+| `bot.viem.account.address` | EOA (Gas Wallet) | Signs & pays gas fees | **Base ETH (REQUIRED)** |
+| `bot.appAddress` | Smart Account (Treasury) | Holds funds for transfers | Base ETH + tokens (optional) |
+
+**CRITICAL:** Your gas wallet (`bot.viem.account.address`) **MUST** be funded with Base ETH for transaction fees. The treasury (`bot.appAddress`) is only needed if your bot sends tokens/payments to users.
+
+### 4.2 Project Setup
+
+```bash
+# Create bot at https://app.towns.com/developer
+# Save APP_PRIVATE_DATA and JWT_SECRET
+
+bunx towns-bot init my-bot
+cd my-bot
+bun install
+```
+
+### 4.3 Initialization
+
+```typescript
+import { makeTownsBot } from '@towns-protocol/bot'
+import type { BotCommand } from '@towns-protocol/bot'
+
+const commands = [
+  { name: 'help', description: 'Show help' },
+  { name: 'ping', description: 'Check if alive' }
+] as const satisfies BotCommand[]
+
+const bot = await makeTownsBot(
+  process.env.APP_PRIVATE_DATA!,
+  process.env.JWT_SECRET!,
+  {
+    commands,
+    baseRpcUrl: process.env.BASE_RPC_URL,  // Recommended: custom RPC
+    identity: {
+      name: 'My Bot',
+      description: 'A helpful bot',
+      image: 'https://example.com/avatar.png'
+    }
+  }
+)
+
+const app = bot.start()
+export default app
+```
+
+### 4.4 Environment Variables
+
+```bash
+APP_PRIVATE_DATA=<base64_credentials>
+JWT_SECRET=<webhook_secret>
+PORT=3000
+BASE_URL=https://mybot.onrender.com
+BASE_RPC_URL=https://base-mainnet.g.alchemy.com/v2/KEY  # Recommended
+```
+
+### 4.5 Check Balances
+
+```typescript
+import { formatEther } from 'viem'
+
+const gasBalance = await bot.viem.getBalance({ address: bot.viem.account.address })
+const treasuryBalance = await bot.viem.getBalance({ address: bot.appAddress })
+console.log(`Gas: ${formatEther(gasBalance)} ETH`)
+console.log(`Treasury: ${formatEther(treasuryBalance)} ETH`)
+```
+
+---
+
+## 5. Message Forwarding Modes
+
+Keywords: forwarding, all messages, mentions only, filtering, Developer Portal
+
+Configure at https://app.towns.com/developer
+
+| Mode | Receives | Available Handlers |
+|------|----------|-------------------|
+| **All Messages** | Everything | All handlers including onTip, onChannelJoin/Leave |
+| **Mentions/Commands** (Default) | Mentions, replies, reactions, commands | onMessage (filtered), onSlashCommand, onReaction |
+| **No Messages** | Nothing | Bot can still SEND messages |
+
+**Note**: `onTip`, `onChannelJoin`, `onChannelLeave`, `onEventRevoke` require "All Messages" mode.
+
+---
+
+## 6. Event Handlers
+
+Keywords: onMessage, onSlashCommand, onReaction, onTip, onInteractionResponse, onChannelJoin, onChannelLeave, events
+
+### 6.1 Base Payload (All Events)
+
+```typescript
+interface BasePayload {
+  userId: string      // Sender address (0x...)
+  spaceId: string
+  channelId: string
+  eventId: string     // Use for threadId/replyId
+  createdAt: Date
+}
+```
+
+### 6.2 onMessage
+
+Triggers on regular messages (NOT slash commands).
+
+```typescript
+bot.onMessage(async (handler, event) => {
+  // event.message: string
+  // event.isMentioned: boolean
+  // event.mentions: Array<{ userId, displayName }>
+  // event.threadId?: string
+  // event.replyId?: string
+  
+  if (event.isMentioned) {
+    await handler.sendMessage(event.channelId, 'You mentioned me!')
+  }
+})
+```
+
+### 6.3 onSlashCommand
+
+Triggers on `/command args`. Does NOT trigger onMessage.
+
+```typescript
+bot.onSlashCommand('ping', async (handler, event) => {
+  // event.command: string (without /)
+  // event.args: string[]
+  // event.mentions: Array<{ userId, displayName }>
+  
+  const latency = Date.now() - event.createdAt.getTime()
+  await handler.sendMessage(event.channelId, `Pong! 🏓 (${latency}ms)`)
+})
+```
+
+### 6.4 onReaction
+
+Triggers on emoji reactions. No access to original message content.
+
+```typescript
+bot.onReaction(async (handler, event) => {
+  // event.reaction: string (emoji or name like "thumbsup")
+  // event.messageId: string
+  
+  if (event.reaction === '👍') {
+    await handler.sendReaction(event.channelId, event.messageId, '🎉')
+  }
+})
+```
+
+### 6.5 onTip
+
+Triggers on cryptocurrency tips. **Requires "All Messages" mode.**
+
+```typescript
+import { formatEther, zeroAddress } from 'viem'
+
+bot.onTip(async (handler, event) => {
+  // event.messageId, senderAddress, receiverAddress, amount (bigint), currency
+  
+  const isForBot = event.receiverAddress === bot.appAddress
+  if (isForBot) {
+    const amount = formatEther(event.amount)
+    await handler.sendMessage(event.channelId, `💰 Thanks for ${amount} ETH!`)
+  }
+})
+```
+
+### 6.6 onInteractionResponse
+
+Triggers on button clicks, form submits, transaction/signature responses.
+
+```typescript
+bot.onInteractionResponse(async (handler, event) => {
+  const { response } = event
+  
+  switch (response.payload.content?.case) {
+    case 'form':
+      // Handle buttons/text inputs (see §9)
+      break
+    case 'transaction':
+      // Handle tx result (see §10)
+      break
+    case 'signature':
+      // Handle signature (see §11)
+      break
+  }
+})
+```
+
+### 6.7 Other Handlers
+
+| Handler | Trigger | Requires |
+|---------|---------|----------|
+| `onMessageEdit` | Message edited | - |
+| `onRedaction` | Message deleted | - |
+| `onEventRevoke` | Message revoked | All Messages mode |
+| `onChannelJoin` | User joins | All Messages mode |
+| `onChannelLeave` | User leaves | All Messages mode |
+| `onStreamEvent` | Any raw event | Advanced use |
+
+### 6.8 onStreamEvent (Advanced)
+
+Low-level handler for raw events:
+
+```typescript
+bot.onStreamEvent(async (handler, event) => {
+  // event.event: ParsedEvent (raw protocol event)
+  // Use for custom event processing not covered by other handlers
+})
+```
+
+---
+
+## 7. Messaging API
+
+Keywords: sendMessage, mentions, threads, replies, attachments, images, videos, markdown, editing
+
+### 7.1 Basic Message
+
+```typescript
+const { eventId } = await handler.sendMessage(channelId, 'Hello!')
+
+// With markdown
+await handler.sendMessage(channelId, '**Bold** *Italic* `code`')
+```
+
+### 7.2 Mentions
+
+**MUST include BOTH formatted text AND mentions array:**
+
+```typescript
+// Single mention
+await handler.sendMessage(channelId, `Hello <@${userId}>!`, {
+  mentions: [{ userId, displayName: 'Alice' }]
+})
+
+// Multiple mentions
+await handler.sendMessage(channelId, `Hey <@${user1}> and <@${user2}>!`, {
+  mentions: [
+    { userId: user1, displayName: 'Alice' },
+    { userId: user2, displayName: 'Bob' }
+  ]
+})
+
+// @channel
+await handler.sendMessage(channelId, 'Attention!', {
+  mentions: [{ atChannel: true }]
+})
+```
+
+### 7.3 Threads & Replies
+
+```typescript
+// Reply in thread
+await handler.sendMessage(channelId, 'Thread reply', { threadId: eventId })
+
+// Reply to specific message
+await handler.sendMessage(channelId, 'Reply', { replyId: messageId })
+
+// Both
+await handler.sendMessage(channelId, 'Reply in thread', {
+  threadId: threadEventId,
+  replyId: messageEventId
+})
+```
+
+### 7.4 Ephemeral Messages
+
+Not stored in channel history:
+
+```typescript
+await handler.sendMessage(channelId, 'Temporary message', { ephemeral: true })
+```
+
+### 7.5 Attachments
+
+```typescript
+// Image
+attachments: [{ type: 'image', url: 'https://...jpg', alt: 'Description' }]
+
+// Link
+attachments: [{ type: 'link', url: 'https://docs.towns.com' }]
+
+// Miniapp
+attachments: [{ type: 'miniapp', url: 'https://your-app.com/miniapp.html' }]
+
+// Video/Large file (chunked)
+import { readFileSync } from 'node:fs'
+attachments: [{
+  type: 'chunked',
+  data: readFileSync('./video.mp4'),  // Uint8Array
+  filename: 'video.mp4',
+  mimetype: 'video/mp4',              // Required for Uint8Array
+  width: 1920,                        // Optional
+  height: 1080
+}]
+```
+
+### 7.6 Edit & Delete
+
+```typescript
+// Edit (bot's own only)
+await handler.editMessage(channelId, eventId, 'New text')
+
+// Delete (bot's own)
+await handler.removeEvent(channelId, eventId)
+
+// Admin delete (needs Permission.Redact)
+await handler.adminRemoveEvent(channelId, eventId)
+```
+
+### 7.7 Reactions
+
+```typescript
+await handler.sendReaction(channelId, messageId, '👍')
+```
+
+---
+
+## 8. Slash Commands
+
+Keywords: /commands, arguments, args, paid commands, x402, command definitions
+
+### 8.1 Define Commands
+
+```typescript
+// src/commands.ts
+import type { BotCommand } from '@towns-protocol/bot'
+
+export const commands = [
+  { name: 'help', description: 'Show help' },
+  { name: 'weather', description: 'Get weather for location' },
+  { name: 'generate', description: 'AI content', paid: { price: '$0.20' } }  // Paid
+] as const satisfies BotCommand[]
+```
+
+### 8.2 Handle Commands
+
+```typescript
+import commands from './commands'
+const bot = await makeTownsBot(privateData, jwtSecret, { commands })
+
+bot.onSlashCommand('help', async (handler, event) => {
+  const list = commands.map(c => `• \`/${c.name}\` - ${c.description}`).join('\n')
+  await handler.sendMessage(event.channelId, `**Commands**\n${list}`)
+})
+
+bot.onSlashCommand('weather', async (handler, { args, channelId }) => {
+  // /weather San Francisco → args: ['San', 'Francisco']
+  const location = args.join(' ')
+  if (!location) {
+    await handler.sendMessage(channelId, 'Usage: /weather <location>')
+    return
+  }
+  // ... fetch weather
+})
+```
+
+### 8.3 Paid Commands (x402)
+
+```typescript
+// Handler only runs after payment succeeds
+bot.onSlashCommand('generate', async (handler, event) => {
+  await handler.sendMessage(event.channelId, 'Generating your content...')
+})
+```
+
+---
+
+## 9. Interactive Components
+
+Keywords: forms, buttons, text inputs, sendInteractionRequest, polls, surveys
+
+### 9.1 Send Form
+
+Keywords: interactive components, type: 'form', buttons, textInput, recipient
+
+```typescript
+await handler.sendInteractionRequest(channelId, {
+  type: 'form',           // NEW: 'type' not 'case'
+  id: 'my-form',
+  components: [
+    { id: 'name', type: 'textInput', placeholder: 'Enter name...' },
+    { id: 'submit', type: 'button', label: 'Submit' },
+    { id: 'cancel', type: 'button', label: 'Cancel' }
+  ],
+  recipient: event.userId  // Optional: private to this user
+})
+```
+
+### 9.2 Component Types
+
+| Type | Properties |
+|------|------------|
+| `button` | `id`, `type: 'button'`, `label` |
+| `textInput` | `id`, `type: 'textInput'`, `placeholder` |
+
+### 9.3 Handle Response
+
+```typescript
+bot.onInteractionResponse(async (handler, event) => {
+  if (event.response.payload.content?.case !== 'form') return
+  
+  const form = event.response.payload.content.value
+  if (form.id !== 'my-form') return
+  
+  for (const c of form.components) {
+    if (c.component.case === 'button') {
+      // Button clicked: c.id is the button id
+      if (c.id === 'submit') {
+        await handler.sendMessage(event.channelId, '✅ Submitted!')
+      }
+    }
+    if (c.component.case === 'textInput') {
+      // Text value: c.component.value.value
+      const text = c.component.value.value
+    }
+  }
+})
+```
+
+### 9.4 Public vs Private Interactions
+
+```typescript
+// PUBLIC - anyone can respond (no recipient)
+await handler.sendInteractionRequest(channelId, {
+  type: 'form',
+  id: 'public-poll',
+  components: [
+    { id: 'yes', type: 'button', label: 'Yes' },
+    { id: 'no', type: 'button', label: 'No' }
+  ]
+  // No recipient = anyone can click
+})
+
+// PRIVATE - only specific user can respond
+await handler.sendInteractionRequest(channelId, {
+  type: 'form',
+  id: 'private-form',
+  components: [
+    { id: 'confirm', type: 'button', label: 'Confirm' }
+  ],
+  recipient: event.userId  // Only this user sees/can interact
+})
+```
+
+### 9.5 Poll Example
+
+```typescript
+const polls = new Map<string, { yes: number; no: number; voters: Set<string> }>()
+
+bot.onSlashCommand('poll', async (handler, event) => {
+  const pollId = `poll-${Date.now()}`
+  polls.set(pollId, { yes: 0, no: 0, voters: new Set() })
+  
+  await handler.sendInteractionRequest(event.channelId, {
+    type: 'form',
+    id: pollId,
+    components: [
+      { id: 'yes', type: 'button', label: 'Yes' },
+      { id: 'no', type: 'button', label: 'No' }
+    ]
+  })
+})
+
+bot.onInteractionResponse(async (handler, event) => {
+  if (event.response.payload.content?.case !== 'form') return
+  const form = event.response.payload.content.value
+  const poll = polls.get(form.id)
+  if (!poll || poll.voters.has(event.userId)) return
+  
+  poll.voters.add(event.userId)
+  for (const c of form.components) {
+    if (c.component.case === 'button') {
+      if (c.id === 'yes') poll.yes++
+      if (c.id === 'no') poll.no++
+    }
+  }
+  await handler.sendMessage(event.channelId, `Yes: ${poll.yes}, No: ${poll.no}`)
+})
+```
+
+---
+
+## 10. Transaction Requests
+
+Keywords: user transactions, signing, ERC20, token transfers, blockchain, sendInteractionRequest
+
+### 10.1 Request Transaction (NEW API)
+
+Keywords: payment request, type: 'transaction', encodeFunctionData, tx object
+
+**Security Note**: Always verify transaction success using `waitForTransactionReceipt` before granting access or updating state. See §10.5 for examples.
+
+```typescript
+import { encodeFunctionData, erc20Abi, parseUnits } from 'viem'
+
+await handler.sendInteractionRequest(channelId, {
+  type: 'transaction',    // NEW: 'type' not 'case'
+  id: 'token-transfer',
+  title: 'Send Tokens',
+  subtitle: 'Transfer 50 USDC',
+  tx: {                   // NEW: 'tx' object
+    chainId: '8453',
+    to: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',  // USDC
+    value: '0',
+    data: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: 'transfer',
+      args: [recipient, parseUnits('50', 6)]
+    }),
+    signerWallet: undefined  // Optional: require specific wallet
+  },
+  recipient: event.userId
+})
+```
+
+### 10.2 Transaction Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `'transaction'` | Yes | Interaction type |
+| `id` | string | Yes | Unique ID for matching response |
+| `title` | string | Yes | Heading shown to user |
+| `subtitle` | string | Yes | Description text |
+| `tx.chainId` | string | Yes | Chain ID (`'8453'` for Base) |
+| `tx.to` | string | Yes | Contract/recipient address |
+| `tx.value` | string | Yes | ETH in wei (as string) |
+| `tx.data` | string | Yes | Encoded function call or `'0x'` |
+| `tx.signerWallet` | string | No | Require specific wallet (omit for user choice) |
+| `recipient` | string | No | Target user address (private interaction) |
+
+### 10.3 Simple ETH Transfer
+
+```typescript
+import { parseEther } from 'viem'
+
+await handler.sendInteractionRequest(channelId, {
+  type: 'transaction',
+  id: `payment-${Date.now()}`,
+  title: 'Send ETH',
+  subtitle: 'Send 0.01 ETH',
+  tx: {
+    chainId: '8453',
+    to: recipientAddress,
+    value: parseEther('0.01').toString(),
+    data: '0x',
+    signerWallet: undefined
+  },
+  recipient: event.userId
+})
+```
+
+### 10.4 Handle Response
+
+```typescript
+bot.onInteractionResponse(async (handler, event) => {
+  if (event.response.payload.content?.case !== 'transaction') return
+  
+  const tx = event.response.payload.content.value
+  if (tx.txHash) {
+    await handler.sendMessage(event.channelId, 
+      `✅ Success: https://basescan.org/tx/${tx.txHash}`)
+  } else if (tx.error) {
+    await handler.sendMessage(event.channelId, `❌ Failed: ${tx.error}`)
+  }
+})
+```
+
+### 10.5 Verify Transaction Results
+
+Keywords: payment verification, waitForTransactionReceipt, on-chain confirmation, receipt.status
+
+When accepting payments or relying on transaction success, always verify the transaction on-chain:
+
+```typescript
+import { waitForTransactionReceipt } from 'viem/actions'
+
+bot.onInteractionResponse(async (handler, event) => {
+  if (event.response.payload.content?.case !== 'transaction') return
+  const tx = event.response.payload.content.value
+
+  if (tx.txHash) {
+    // Verify transaction succeeded on-chain
+    const receipt = await waitForTransactionReceipt(bot.viem, {
+      hash: tx.txHash
+    })
+
+    if (receipt.status !== 'success') {
+      await handler.sendMessage(event.channelId, '❌ Transaction failed on-chain')
+      return
+    }
+
+    // Transaction confirmed - safe to grant access or update state
+    await grantUserAccess(event.userId)
+    await handler.sendMessage(event.channelId,
+      `✅ Payment confirmed!\n[View transaction](https://basescan.org/tx/${tx.txHash})`
+    )
+  }
+})
+```
+
+**Critical for payments**: Never grant access based on `txHash` alone. Always verify:
+1. Transaction succeeded (`receipt.status === 'success'`)
+2. For payments, optionally parse logs to verify amount and recipient
+
+---
+
+## 11. Signature Requests
+
+Keywords: EIP-712, personal_sign, typed data, wallet signatures, authentication
+
+### 11.1 Request Signature (NEW API)
+
+```typescript
+await handler.sendInteractionRequest(channelId, {
+  type: 'signature',      // NEW: 'type' not 'case'
+  id: 'agreement',
+  title: 'Sign Agreement',
+  subtitle: 'I agree to the terms',
+  chainId: '8453',
+  data: JSON.stringify({
+    domain: { name: 'My Bot', version: '1', chainId: 8453, verifyingContract: '0x0000000000000000000000000000000000000000' },
+    types: { Message: [{ name: 'content', type: 'string' }] },
+    primaryType: 'Message',
+    message: { content: 'I agree to the terms' }
+  }),
+  method: 'typed_data',   // or 'personal_sign'
+  signerWallet: event.userId,
+  recipient: event.userId
+})
+```
+
+### 11.2 Signature Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `'signature'` | Yes | Interaction type |
+| `id` | string | Yes | Unique ID for matching response |
+| `chainId` | string | Yes | Chain ID |
+| `data` | string | Yes | JSON stringified EIP-712 or plain message |
+| `method` | string | Yes | `'typed_data'` or `'personal_sign'` |
+| `signerWallet` | string | Yes | Wallet address to sign with |
+| `title` | string | No | Heading shown to user |
+| `subtitle` | string | No | Description text |
+| `recipient` | string | No | Target user address (private interaction) |
+
+### 11.3 Personal Sign
+
+```typescript
+await handler.sendInteractionRequest(channelId, {
+  type: 'signature',
+  id: 'simple-sig',
+  title: 'Sign Message',
+  chainId: '8453',
+  data: 'Please sign to authenticate',
+  method: 'personal_sign',
+  signerWallet: event.userId,
+  recipient: event.userId
+})
+```
+
+### 11.4 Handle Response
+
+```typescript
+bot.onInteractionResponse(async (handler, event) => {
+  if (event.response.payload.content?.case !== 'signature') return
+  
+  const sig = event.response.payload.content.value
+  if (sig.signature) {
+    await handler.sendMessage(event.channelId, '✅ Signed!')
+  } else if (sig.error) {
+    await handler.sendMessage(event.channelId, `❌ Failed: ${sig.error}`)
+  }
+})
+```
+
+---
+
+## 12. Blockchain Operations
+
+Keywords: viem, readContract, execute, on-chain, smart contracts, ERC20, balances, tips
+
+### 12.1 Read Contract
+
+```typescript
+import { readContract } from 'viem/actions'
+
+const balance = await readContract(bot.viem, {
+  address: tokenAddress,
+  abi: erc20Abi,
+  functionName: 'balanceOf',
+  args: [userAddress]
+})
+```
+
+### 12.2 Write Contract (execute)
+
+Primary method for all on-chain operations:
+
+```typescript
+import { execute } from 'viem/experimental/erc7821'
+import { waitForTransactionReceipt } from 'viem'
+
+const hash = await execute(bot.viem, {
+  address: bot.appAddress,
+  account: bot.viem.account,
+  calls: [{
+    to: targetAddress,
+    abi: contractAbi,
+    functionName: 'someFunction',
+    args: [arg1, arg2],
+    value: parseEther('0.01')
+  }]
 })
 
 await waitForTransactionReceipt(bot.viem, { hash })
 ```
 
-**Interacting with ANY Contract (PRIMARY METHOD):**
+### 12.3 writeContract (SimpleAccount Only)
 
-Use `execute` from ERC-7821 for any onchain interaction. This is your main tool for blockchain operations - tipping, swapping, staking, NFTs, DeFi, anything!
+Alternative for bot's own SimpleAccount contract:
 
 ```typescript
-import { execute } from 'viem/experimental/erc7821'
-import { parseEther } from 'viem'
+import { writeContract } from 'viem/actions'
+import simpleAppAbi from '@towns-protocol/bot/simpleAppAbi'
 
-// Single operation: tip a user on Towns
-bot.onSlashCommand("tip", async (handler, { channelId, spaceId, mentions, args }) => {
-  if (mentions.length === 0 || !args[0]) {
-    await handler.sendMessage(channelId, "Usage: /tip @user <amount>")
-    return
-  }
-
-  const recipient = mentions[0].userId
-  const amount = parseEther(args[0])
-
-  const hash = await execute(bot.viem, {
-    address: bot.appAddress,
-    account: bot.viem.account,
-    calls: [{
-      to: tippingContractAddress,
-      abi: tippingAbi,
-      functionName: 'tip',
-      value: amount,
-      args: [{
-        receiver: recipient,
-        tokenId: tokenId,
-        currency: ETH_ADDRESS,
-        amount: amount,
-        messageId: messageId,
-        channelId: channelId
-      }]
-    }]
-  })
-
-  await waitForTransactionReceipt(bot.viem, { hash })
-
-  await handler.sendMessage(channelId, `Tipped ${args[0]} ETH to ${recipient}! Tx: ${hash}`)
+const hash = await writeContract(bot.viem, {
+  address: bot.appAddress,
+  abi: simpleAppAbi,
+  functionName: 'sendCurrency',
+  args: [recipient, zeroAddress, parseEther('0.01')]
 })
 ```
 
-**Batch Operations:**
+**Note:** Use `execute()` for external contracts. `writeContract` with `simpleAppAbi` is only for the bot's own SimpleAccount.
 
-Execute multiple onchain interactions in a single atomic transaction:
-
-```typescript
-import { execute } from 'viem/experimental/erc7821'
-import { parseEther } from 'viem'
-
-// Airdrop tips to multiple users in one transaction
-bot.onSlashCommand("airdrop", async (handler, { channelId, mentions, args }) => {
-  if (mentions.length === 0 || !args[0]) {
-    await handler.sendMessage(channelId, "Usage: /airdrop @user1 @user2 ... <amount-each>")
-    return
-  }
-
-  const amountEach = parseEther(args[0])
-
-  // Build batch calls - one tip per user
-  const calls = mentions.map(mention => ({
-    to: tippingContractAddress,
-    abi: tippingAbi,
-    functionName: 'tip',
-    value: amountEach,
-    args: [{
-      receiver: mention.userId,
-      tokenId: tokenId,
-      currency: ETH_ADDRESS,
-      amount: amountEach,
-      messageId: messageId,
-      channelId: channelId
-    }]
-  }))
-
-  const hash = await execute(bot.viem, {
-    address: bot.appAddress,
-    account: bot.viem.account,
-    calls
-  })
-
-  await waitForTransactionReceipt(bot.viem, { hash })
-
-  await handler.sendMessage(
-    channelId,
-    `Airdropped ${args[0]} ETH to ${mentions.length} users! Tx: ${hash}`
-  )
-})
-```
-
-**Complex Multi-Step Operations:**
-
-Combine different contract interactions (approve + swap + stake, etc.):
+### 12.4 Batch Transactions (Atomic)
 
 ```typescript
-import { execute } from 'viem/experimental/erc7821'
-import { parseEther } from 'viem'
-
-// Approve, swap, and stake in one atomic transaction
-bot.onSlashCommand("defi", async (handler, { channelId, args }) => {
-  const amount = parseEther(args[0] || '100')
-
-  const hash = await execute(bot.viem, {
-    address: bot.appAddress,
-    account: bot.viem.account,
-    calls: [
-      {
-        to: tokenAddress,
-        abi: erc20Abi,
-        functionName: 'approve',
-        args: [dexAddress, amount]
-      },
-      {
-        to: dexAddress,
-        abi: dexAbi,
-        functionName: 'swapExactTokensForTokens',
-        args: [amount, minOut, [tokenIn, tokenOut], bot.appAddress]
-      },
-      {
-        to: stakingAddress,
-        abi: stakingAbi,
-        functionName: 'stake',
-        args: [amount]
-      }
-    ]
-  })
-
-  await waitForTransactionReceipt(bot.viem, { hash })
-
-  await handler.sendMessage(channelId, `Swapped and staked ${args[0]} tokens! Tx: ${hash}`)
-})
-```
-
-**Advanced: Batch of Batches:**
-
-Use `executeBatch` for executing multiple batches (advanced use case):
-
-```typescript
-import { executeBatch } from 'viem/experimental/erc7821'
-
-// Execute batches of batches
-const hash = await executeBatch(bot.viem, {
+const hash = await execute(bot.viem, {
   address: bot.appAddress,
   account: bot.viem.account,
   calls: [
-    [/* first batch */],
-    [/* second batch */],
-    [/* third batch */]
+    { to: token, abi: erc20Abi, functionName: 'approve', args: [spender, amount] },
+    { to: dex, abi: dexAbi, functionName: 'swap', args: [...] }
   ]
 })
 ```
 
-**When to Use Each:**
+### 12.5 Send Tips
 
-- **`readContract`**: Reading from any contract (no transaction needed)
-- **`writeContract`**: ONLY for bot's own SimpleAccount contract operations
-- **`execute`**: PRIMARY METHOD for any onchain interaction
-  - Tipping, swapping, staking, NFT minting, etc.
-  - Works for single operations OR batch operations
-  - Atomic execution (all succeed or all fail)
-  - Gas optimized when batching multiple operations
-  - This is how you interact with external contracts
-- **`executeBatch`**: Advanced batching (batches of batches)
-
-### Snapshot Data Access
-
-The bot provides type-safe access to stream snapshot data through `bot.snapshot`:
+Requires funded gas wallet (`bot.viem.account.address`):
 
 ```typescript
-// Get channel settings and inception data
-const inception = await bot.snapshot.getChannelInception(channelId)
-const settings = inception?.channelSettings
-
-// Get user memberships
-const memberships = await bot.snapshot.getUserMemberships(userId)
-
-// Get space membership list
-const members = await bot.snapshot.getSpaceMemberships(spaceId)
-```
-Note: Snapshot data may be outdated - it's a point-in-time view
-
-## Storage Strategy Decision Matrix
-
-| Hosting Type | Can Use In-Memory? | Recommended Storage | Why |
-|-------------|-------------------|-------------------|-----|
-| **Always-On VPS** | Yes | Map/Set, SQLite, PostgreSQL | Process persists between requests |
-| **Dedicated Server** | Yes | Map/Set, SQLite, PostgreSQL | Full control over lifecycle |
-| **Paid Cloud (Heroku/Render)** | Yes | Redis or PostgreSQL | Reliable uptime guarantees |
-| **Serverless (Lambda)** | Not supported yet | Not supported yet | Bot framework doesn't support serverless |
-| **Free Tier Hosting (Render)** | No | Turso (free plan) or SQLite (if file persists) | May sleep after inactivity |
-| **Docker Container** | Yes* | Depends on orchestration | *If not auto-scaled |
-
-### Storage Implementation Examples
-
-#### In-Memory (Always-On Servers)
-```typescript
-// Simple and fast for reliable hosting
-const messageCache = new Map<string, any>()
-const userStates = new Map<string, any>()
-
-bot.onMessage(async (handler, event) => {
-  messageCache.set(event.eventId, event)
-  // Cache persists between webhook calls
+await handler.sendTip({
+  userId: recipientUserId,
+  amount: parseEther('0.001'),
+  messageId: messageId,
+  channelId: channelId
 })
 ```
 
-#### SQLite with Drizzle (Serverless/Unreliable)
+### 12.6 Get User's Smart Account
+
 ```typescript
-import { drizzle } from 'drizzle-orm/bun-sqlite'
-import { text, integer, sqliteTable } from 'drizzle-orm/sqlite-core'
+import { getSmartAccountFromUserId } from '@towns-protocol/bot'
 
-const messages = sqliteTable('messages', {
-  eventId: text('event_id').primaryKey(),
-  userId: text('user_id').notNull(),
-  content: text('content').notNull(),
-  timestamp: integer('timestamp').notNull(),
-  threadId: text('thread_id'),
-  replyId: text('reply_id')
-})
+const wallet = await getSmartAccountFromUserId(bot, { userId: event.userId })
+// Returns address or null
+```
 
-const db = drizzle(new Database('bot.db'))
+---
 
-bot.onMessage(async (handler, event) => {
-  // Persists across cold starts
-  await db.insert(messages).values({
-    eventId: event.eventId,
-    userId: event.userId,
-    content: event.message,
-    timestamp: Date.now(),
-    threadId: event.threadId,
-    replyId: event.replyId
-  })
-})
+## 13. Permissions & Moderation
 
-bot.onReaction(async (handler, event) => {
-  // Retrieve context from database
-  const [original] = await db
-    .select()
-    .from(messages)
-    .where(eq(messages.eventId, event.messageId))
+Keywords: Permission, ban, unban, admin, hasAdminPermission, checkPermission, moderation
+
+### 13.1 Permission Enum
+
+```typescript
+import { Permission } from '@towns-protocol/web3'
+
+Permission.Read
+Permission.Write
+Permission.Redact
+Permission.React
+Permission.Invite
+Permission.JoinSpace
+Permission.ModifyBanning
+Permission.PinMessage
+Permission.AddRemoveChannels
+Permission.ModifySpaceSettings
+```
+
+### 13.2 Check Permissions
+
+```typescript
+const isAdmin = await handler.hasAdminPermission(userId, spaceId)
+const canRedact = await handler.checkPermission(channelId, userId, Permission.Redact)
+```
+
+### 13.3 Ban/Unban
+
+Requires `ModifyBanning` permission and funded gas wallet (`bot.viem.account.address`):
+
+```typescript
+await handler.ban(userId, spaceId)
+await handler.unban(userId, spaceId)
+```
+
+---
+
+## 14. Roles & Token Gating
+
+Keywords: createRole, Rules API, token-gated, ERC20, ERC721, NFT gating, access control
+
+Requires bot admin permissions and funded gas wallet (`bot.viem.account.address`).
+
+### 14.1 Create Role
+
+```typescript
+import { Permission } from '@towns-protocol/web3'
+
+const { roleId } = await bot.createRole(spaceId, {
+  name: 'Moderator',
+  permissions: [Permission.Read, Permission.Write, Permission.ModifyBanning],
+  users: ['0x...']  // Optional
 })
 ```
 
-#### Redis (High-Performance Persistent)
-```typescript
-import Redis from 'ioredis'
-const redis = new Redis(process.env.REDIS_URL)
+### 14.2 Token-Gated Roles (Rules API)
 
-bot.onMessage(async (handler, event) => {
-  // Store with TTL
-  await redis.setex(
-    `msg:${event.eventId}`,
-    3600, // 1 hour TTL
-    JSON.stringify(event)
-  )
-  
-  // Track user activity
-  await redis.zadd(
-    `user:${event.userId}:messages`,
-    Date.now(),
-    event.eventId
-  )
+```typescript
+import { Permission, Rules } from '@towns-protocol/web3'
+
+const townsHolderRule = Rules.checkErc20({
+  chainId: 8453n,
+  contractAddress: '0x00000000A22C618fd6b4D7E9A335C4B96B189a38',
+  threshold: 1n
 })
+
+const role = await bot.createRole(spaceId, {
+  name: 'Towns Holder',
+  permissions: [Permission.Read, Permission.Write],
+  rule: townsHolderRule
+})
+
+await bot.addRoleToChannel(channelId, role.roleId)
 ```
 
-## Advanced Bot Patterns
+### 14.3 Rule Types
 
-### Moderation Bot
 ```typescript
-const warnings = new Map<string, number>()
-const bannedWords = ['spam', 'scam']
+Rules.checkErc721({ chainId, contractAddress, threshold })
+Rules.checkErc20({ chainId, contractAddress, threshold })
+Rules.checkErc1155({ chainId, contractAddress, tokenId, threshold })
+Rules.checkEthBalance({ threshold })
+Rules.checkIsEntitled({ chainId, contractAddress, params? })
 
-bot.onMessage(async (handler, event) => {
-  const hasViolation = bannedWords.some(word => 
-    event.message.toLowerCase().includes(word)
-  )
-  
-  if (hasViolation) {
-    // Delete the message
-    await handler.adminRemoveEvent(event.channelId, event.eventId)
-    
-    // Track warnings
-    const count = (warnings.get(event.userId) || 0) + 1
-    warnings.set(event.userId, count)
-    
-    // Send warning
-    await handler.sendMessage(
-      event.channelId,
-      `WARNING: <@${event.userId}> Your message was removed. Warning ${count}/3`
-    )
-    
-    // Ban after 3 warnings
-    if (count >= 3) {
-      // Ban the user (requires ModifyBanning permission)
-      await handler.ban(event.userId, event.spaceId)
-      await handler.sendMessage(
-        event.channelId,
-        `<@${event.userId}> has been banned after 3 warnings`
-      )
+// Combine
+Rules.and(ruleA, ruleB)
+Rules.or(ruleA, ruleB)
+Rules.every(ruleA, ruleB, ruleC)
+Rules.some(ruleA, ruleB, ruleC)
+```
+
+### 14.4 Manage Roles
+
+```typescript
+const roles = await bot.getAllRoles(spaceId)
+const role = await bot.getRole(spaceId, roleId)
+await bot.updateRole(spaceId, roleId, { name: 'New Name', permissions: [...] })
+await bot.deleteRole(spaceId, roleId)
+await bot.addRoleToChannel(channelId, roleId)
+```
+
+---
+
+## 15. Miniapps
+
+Keywords: iframe, miniapp SDK, Farcaster SDK, HTML, embedded app, wallet provider, fc:miniapp
+
+### 15.1 Required Meta Tag
+
+Every miniapp MUST have this in `<head>`:
+
+```html
+<meta name="fc:miniapp" content='{
+  "version": "1",
+  "imageUrl": "https://your-domain.com/preview.png",
+  "button": {
+    "title": "Open App",
+    "action": {
+      "type": "launch_miniapp",
+      "name": "My Miniapp",
+      "url": "https://your-domain.com/miniapp.html",
+      "splashImageUrl": "https://your-domain.com/splash.png",
+      "splashBackgroundColor": "#667eea"
     }
   }
-})
+}' />
 ```
 
-### Scheduled Message Bot
-```typescript
-const schedules = new Map()
+**Requirements:**
+- `version`: Always `"1"`
+- `button.title`: ~25 chars max, NO emojis
+- HTTPS required in production
 
-bot.onSlashCommand("remind", async (handler, event) => {
-  // /remind 5m Check the oven
-  const [time, ...messageParts] = event.args
-  const message = messageParts.join(" ")
-  
-  const minutes = parseInt(time)
-  if (isNaN(minutes)) {
-    await handler.sendMessage(event.channelId, "Usage: /remind <minutes> <message>")
-    return
+### 15.2 SDK Initialization
+
+Keywords: SDK initialization, timeout, ready(), context, @farcaster/miniapp-sdk, version 0.2.1
+
+Use version 0.2.1 exactly (0.2.3 returns 404):
+
+```javascript
+import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk@0.2.1'
+
+async function initTownsSDK() {
+  try {
+    // Step 1: Call ready() with timeout (SKIP isInMiniApp check!)
+    try {
+      await Promise.race([
+        sdk.actions.ready(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+      ])
+    } catch (e) {
+      console.warn('ready() timed out, continuing...')
+    }
+    
+    // Step 2: Get context
+    const context = await Promise.race([
+      sdk.context,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+    ])
+    
+    // Step 3: Validate
+    if (!context?.towns?.user?.userId) {
+      throw new Error('Missing Towns user data')
+    }
+    
+    return context
+  } catch (error) {
+    console.error('SDK init failed:', error)
+    throw error
   }
-  
-  const scheduleId = setTimeout(async () => {
-    await handler.sendMessage(
-      event.channelId,
-      `REMINDER: Reminder for <@${event.userId}>: ${message}`
-    )
-    schedules.delete(event.eventId)
-  }, minutes * 60 * 1000)
-  
-  schedules.set(event.eventId, scheduleId)
-  await handler.sendMessage(event.channelId, `YES Reminder set for ${minutes} minutes`)
-})
-```
-
-### Analytics Bot
-```typescript
-const analytics = {
-  messageCount: new Map(),
-  activeUsers: new Set(),
-  reactionCounts: new Map(),
-  threadStarts: 0
 }
+```
 
-bot.onMessage(async (handler, event) => {
-  // Track metrics
-  analytics.activeUsers.add(event.userId)
-  analytics.messageCount.set(
-    event.userId,
-    (analytics.messageCount.get(event.userId) || 0) + 1
-  )
-  
-  if (!event.threadId && !event.replyId) {
-    // New conversation starter
-    analytics.threadStarts++
-  }
-})
+### 15.3 Context Structure
 
-bot.onSlashCommand("stats", async (handler, event) => {
-  const stats = `
- **Channel Stats**
-• Active users: ${analytics.activeUsers.size}
-• Total messages: ${Array.from(analytics.messageCount.values()).reduce((a,b) => a+b, 0)}
-• Conversations started: ${analytics.threadStarts}
-  `.trim()
-  
-  await handler.sendMessage(event.channelId, stats)
+```javascript
+{
+  user: { displayName, pfpUrl, username },
+  towns: {
+    user: {
+      userId: "0x...",           // Primary identifier
+      address: "0x...",          // Primary wallet
+      linkedWallets: [{ address, type, primary }]
+    },
+    env: "omega",
+    spaceId, spaceName,
+    channelId, channelName,
+    messageId
+  },
+  client: { platformType, added, safeAreaInsets }
+}
+```
+
+### 15.4 Access Context Data
+
+```javascript
+const userId = context.towns.user.userId
+const channelId = context.towns.channelId
+const spaceId = context.towns.spaceId
+const walletAddress = context.towns.user.address
+const allWallets = context.towns.user.linkedWallets
+```
+
+### 15.5 SDK Actions
+
+```javascript
+await sdk.actions.close()
+await sdk.actions.openUrl('https://example.com')
+await sdk.actions.composeCast({ text: 'Hello!', embeds: [], close: false })
+```
+
+### 15.6 Wallet Operations
+
+```javascript
+const provider = await sdk.wallet.getEthereumProvider()
+const accounts = await provider.request({ method: 'eth_accounts' })
+const txHash = await provider.request({
+  method: 'eth_sendTransaction',
+  params: [{ from: accounts[0], to: '0x...', value: '0x38D7EA4C68000' }]
 })
 ```
 
-## Using Bot Methods Outside Handlers
+### 15.7 Multi-Wallet Provider (NEW SDK)
 
-**IMPORTANT:** Bot methods like `sendMessage()` can be called directly on the bot instance, outside of event handlers. This enables integration with external services, webhooks, and scheduled tasks.
+Latest SDK returns structured provider object:
 
-### GitHub Integration Example
+```javascript
+const { 
+  provider,              // Main provider
+  defaultAddress,        // Default wallet address
+  privyAddress,          // Privy wallet (if exists)
+  getProviderForAddress  // Get provider for specific address
+} = await sdk.wallet.getEthereumProvider()
 
-```typescript
-import { Hono } from 'hono'
-import { makeTownsBot } from '@towns-protocol/bot'
-
-const app = new Hono()
-const bot = await makeTownsBot(privateData, jwtSecret, { commands })
-
-// Store which channel wants GitHub notifications
-let githubChannelId: string | null = null
-
-// 1. Setup command to register channel for GitHub notifications
-bot.onSlashCommand("setup-github-here", async (handler, event) => {
-  githubChannelId = event.channelId
-  await handler.sendMessage(
-    event.channelId,
-    "GitHub notifications configured for this channel!"
-  )
+// Send from ANY linked wallet - SDK routes automatically!
+await provider.request({
+  method: 'eth_sendTransaction',
+  params: [{
+    from: anyLinkedWalletAddress,  // SDK handles routing
+    to: '0x...',
+    value: '0x...'
+  }]
 })
 
-// 2. Towns webhook endpoint (required for bot to work)
-const { jwtMiddleware, handler } = bot.start()
-app.post('/webhook', jwtMiddleware, handler)
+// Get provider for specific address
+const specificProvider = getProviderForAddress('0x...')
+```
 
-// 3. GitHub webhook endpoint (separate from Towns webhook)
-app.post('/github-webhook', async (c) => {
-  const payload = await c.req.json()
-  
-  // Check if a channel is configured
-  if (!githubChannelId) {
-    return c.json({ error: "No channel configured" }, 400)
+**Benefits:**
+- No manual provider management
+- Automatic address-based routing
+- Works with Smart Accounts and EOAs
+- Events proxied across all providers
+
+### 15.8 Miniapp API Security
+
+When miniapps submit data to your bot's API endpoints, always validate server-side:
+
+**Validate All Inputs**
+```typescript
+// Example: Secure score submission endpoint
+app.post('/api/score', async (c) => {
+  const { userId, score, time } = await c.req.json()
+
+  // Type validation
+  if (!userId || typeof score !== 'number' || typeof time !== 'number') {
+    return c.json({ error: 'Invalid input' }, 400)
   }
-  
-  // Send GitHub event to the configured Towns channel
-  // NOTE: Using bot.sendMessage() directly, outside any handler!
-  if (payload.action === 'opened' && payload.pull_request) {
-    await bot.sendMessage(
-      githubChannelId,
-      `PR opened: **${payload.pull_request.title}** by ${payload.sender.login}\n${payload.pull_request.html_url}`
-    )
-  } else if (payload.pusher) {
-    const commits = payload.commits?.length || 0
-    await bot.sendMessage(
-      githubChannelId,
-      `Push to ${payload.repository.name}: ${commits} commits by ${payload.pusher.name}`
-    )
+
+  // Range validation
+  if (score < 0 || score > 1000) {
+    return c.json({ error: 'Invalid score range' }, 400)
   }
-  
+
+  if (time < 0 || time > 3600) {
+    return c.json({ error: 'Invalid time range' }, 400)
+  }
+
+  // Store in database (not in-memory)
+  await db.saveScore(userId, score, time)
   return c.json({ success: true })
 })
+```
+
+**Critical Reminders**
+- Never trust client-submitted data (easily manipulated in browser)
+- Use server-side storage (database), not localStorage (per-device, insecure)
+- Implement rate limiting to prevent API abuse
+- Consider authentication tokens for sensitive operations
+- Validate data types, ranges, and formats server-side
+
+See §19.4 for additional production considerations.
+
+---
+
+## 16. Linked Wallets
+
+Keywords: smart accounts, EOA, linkedWallets, getSmartAccountFromUserId, multi-wallet
+
+### 16.1 Wallet Types
+
+| Type | Description |
+|------|-------------|
+| `smartAccount` | ERC-4337 Smart Account |
+| `eoa` | Externally Owned Account |
+
+### 16.2 Access in Miniapp
+
+```javascript
+const userId = context.towns.user.userId        // Primary identifier
+const primaryWallet = context.towns.user.address
+const linkedWallets = context.towns.user.linkedWallets
+// [{ address, type: 'smartAccount'|'eoa', primary: boolean }]
+```
+
+**Note**: userId may not be in linkedWallets - add manually if missing:
+
+```javascript
+function getAllUserWallets(context) {
+  let wallets = context.towns.user.linkedWallets || []
+  const userId = context.towns.user.userId?.toLowerCase()
+  
+  const userIdInWallets = wallets.some(w => w.address.toLowerCase() === userId)
+  if (userId && !userIdInWallets) {
+    wallets = [{ address: userId, type: 'smartAccount', primary: false }, ...wallets]
+  }
+  return wallets
+}
+```
+
+### 16.3 Get User Wallet (Bot Side)
+
+```typescript
+import { getSmartAccountFromUserId } from '@towns-protocol/bot'
+const wallet = await getSmartAccountFromUserId(bot, { userId: event.userId })
+```
+
+---
+
+## 17. Snapshot Data
+
+Keywords: cache, getChannelInception, getUserMemberships, getSpaceMemberships, channel settings
+
+**Note:** Snapshot data is cached and may not reflect real-time state.
+
+### 17.1 Get Channel Info
+
+```typescript
+const channelData = await bot.snapshot.getChannelInception(streamId)
+console.log('Channel name:', channelData.settings.name)
+```
+
+### 17.2 Get User Memberships
+
+```typescript
+const memberships = await bot.snapshot.getUserMemberships(userId)
+// Returns: List of spaces the user is a member of
+```
+
+### 17.3 Get Space Memberships
+
+```typescript
+const members = await bot.snapshot.getSpaceMemberships(spaceId)
+// Returns: List of all users in the space
+```
+
+---
+
+## 18. External Integrations
+
+Keywords: webhooks, timers, Hono, custom routes, scheduled tasks, external APIs
+
+### 18.1 Custom Routes
+
+`bot.start()` returns a Hono app:
+
+```typescript
+const app = bot.start()
+
+app.get('/health', (c) => c.json({ status: 'ok' }))
+
+app.post('/webhook/github', async (c) => {
+  const payload = await c.req.json()
+  if (githubChannelId) {
+    await bot.sendMessage(githubChannelId, `📦 GitHub: ${payload.action}`)
+  }
+  return c.json({ received: true })
+})
+
 export default app
 ```
 
-### Health Check Monitoring Example
+### 18.2 Scheduled Tasks
 
 ```typescript
-const bot = await makeTownsBot(privateData, jwtSecret)
+let dailyChannelId: string | null = null
 
-// Store health check configurations
-const healthChecks = new Map<string, { 
-  interval: NodeJS.Timeout,
-  url: string,
-  secondsBetween: number 
-}>()
+bot.onSlashCommand('enable-daily', async (handler, event) => {
+  dailyChannelId = event.channelId
+  await handler.sendMessage(event.channelId, '✅ Daily enabled')
+})
 
-bot.onSlashCommand("setup-healthcheck", async (handler, event) => {
-  const secondsBetween = parseInt(event.args[0]) || 60
-  const url = event.args[1] || 'https://api.example.com/health'
+function scheduleDailyMessage() {
+  const now = new Date()
+  const next9AM = new Date(now)
+  next9AM.setHours(9, 0, 0, 0)
+  if (now >= next9AM) next9AM.setDate(next9AM.getDate() + 1)
   
-  // Clear existing interval for this channel if any
-  const existing = healthChecks.get(event.channelId)
-  if (existing) {
-    clearInterval(existing.interval)
-  }
+  setTimeout(async () => {
+    if (dailyChannelId) await bot.sendMessage(dailyChannelId, '☀️ Good morning!')
+    scheduleDailyMessage()
+  }, next9AM.getTime() - now.getTime())
+}
+
+scheduleDailyMessage()
+```
+
+### 18.3 Bot Methods (Outside Handlers)
+
+All handler methods available on bot directly:
+
+```typescript
+bot.sendMessage(channelId, msg, opts?)
+bot.editMessage(channelId, eventId, text)
+bot.sendReaction(channelId, messageId, emoji)
+bot.removeEvent(channelId, eventId)
+bot.adminRemoveEvent(channelId, eventId)
+bot.pinMessage(channelId, eventId, streamEvent)
+bot.unpinMessage(channelId, eventId)
+bot.createChannel(spaceId, opts)
+bot.sendTip(opts)
+bot.hasAdminPermission(userId, spaceId)
+bot.checkPermission(channelId, userId, permission)
+bot.ban(userId, spaceId)
+bot.unban(userId, spaceId)
+```
+
+---
+
+## 19. Troubleshooting
+
+Keywords: errors, debugging, common mistakes, gotchas
+
+### 19.1 Common Errors
+
+| Error | Solution |
+|-------|----------|
+| `insufficient funds for gas` | Fund `bot.viem.account.address` with Base ETH |
+| `execution reverted` | Check function args and contract state |
+| `webhook signature invalid` | Verify JWT_SECRET matches Developer Portal |
+| `command not found` | Add to commands array and restart |
+
+### 19.2 Critical Gotchas
+
+1. **User IDs are addresses** - Always `0x...`
+2. **Mentions need BOTH** - `<@userId>` in text AND mentions array
+3. **Slash commands exclusive** - Don't trigger onMessage
+4. **Fund gas wallet** - `bot.viem.account.address` MUST have Base ETH (treasury optional)
+5. **Message forwarding** - Some handlers need "All Messages" mode
+6. **Custom RPC recommended** - Public RPC has rate limits
+7. **Snapshot data is cached** - May not be real-time
+
+### 19.3 Debug Balances
+
+```typescript
+import { formatEther } from 'viem'
+console.log('Gas:', formatEther(await bot.viem.getBalance({ address: bot.viem.account.address })))
+console.log('Treasury:', formatEther(await bot.viem.getBalance({ address: bot.appAddress })))
+```
+
+### 19.4 Production Considerations
+
+When deploying to production, consider these additional requirements:
+
+**Data Persistence**
+- In-memory storage (Map, Set) is lost on bot restart
+- For production, use persistent storage:
+  - SQLite: `import Database from 'bun:sqlite'`
+  - PostgreSQL/MySQL for multi-instance deployments
+  - Redis for shared state across bot instances
+
+**Input Validation**
+- Always validate user inputs before processing
+- Check numeric ranges (amounts, quantities, dates)
+- Sanitize text inputs to prevent injection attacks
+- Validate addresses are valid Ethereum addresses
+
+**Rate Limiting**
+- Protect API endpoints from abuse
+- Limit command frequency per user
+- Use rate limiting middleware or track request counts
+
+**Transaction Verification**
+- Never trust `txHash` alone for payments (see §10.5)
+- Always verify transaction succeeded on-chain
+- Optionally verify payment amount and recipient in logs
+
+**Error Handling**
+- Catch and log errors for debugging
+- Provide user-friendly error messages
+- Implement retry logic for transient failures
+
+**Monitoring**
+- Log important events (payments, errors, security events)
+- Monitor bot health and uptime
+- Track command usage and performance
+
+---
+
+## Appendix B: Full Templates
+
+Keywords: complete examples, full bot code, working templates, copy-paste
+
+### B.1 Minimal Bot
+
+```typescript
+import { makeTownsBot } from '@towns-protocol/bot'
+
+const commands = [
+  { name: 'ping', description: 'Check if alive' }
+] as const
+
+const bot = await makeTownsBot(
+  process.env.APP_PRIVATE_DATA!,
+  process.env.JWT_SECRET!,
+  { commands }
+)
+
+bot.onSlashCommand('ping', async (handler, event) => {
+  await handler.sendMessage(event.channelId, 'Pong! 🏓')
+})
+
+export default bot.start()
+```
+
+### B.2 Interactive Poll Bot
+
+```typescript
+import { makeTownsBot } from '@towns-protocol/bot'
+
+const commands = [{ name: 'poll', description: 'Create poll' }] as const
+const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, { commands })
+
+const polls = new Map<string, { yes: number; no: number; voters: Set<string> }>()
+
+bot.onSlashCommand('poll', async (handler, event) => {
+  const pollId = `poll-${Date.now()}`
+  polls.set(pollId, { yes: 0, no: 0, voters: new Set() })
   
-  // Setup new health check interval
-  const interval = setInterval(async () => {
-    try {
-      const start = Date.now()
-      const response = await fetch(url)
-      const latency = Date.now() - start
-      
-      if (response.ok) {
-        // Direct bot.sendMessage() call from timer
-        await bot.sendMessage(
-          event.channelId,
-          `✅ Health Check OK: ${url} (${latency}ms)`
-        )
-      } else {
-        await bot.sendMessage(
-          event.channelId,
-          `❌ Health Check Failed: ${url} - Status ${response.status}`
-        )
-      }
-    } catch (error) {
-      await bot.sendMessage(
-        event.channelId,
-        `❌ Health Check Error: ${url} - Service unreachable`
-      )
+  await handler.sendInteractionRequest(event.channelId, {
+    type: 'form',
+    id: pollId,
+    components: [
+      { id: 'yes', type: 'button', label: 'Yes' },
+      { id: 'no', type: 'button', label: 'No' }
+    ]
+  })
+})
+
+bot.onInteractionResponse(async (handler, event) => {
+  if (event.response.payload.content?.case !== 'form') return
+  const form = event.response.payload.content.value
+  const poll = polls.get(form.id)
+  if (!poll || poll.voters.has(event.userId)) return
+  
+  poll.voters.add(event.userId)
+  for (const c of form.components) {
+    if (c.component.case === 'button') {
+      if (c.id === 'yes') poll.yes++
+      if (c.id === 'no') poll.no++
     }
-  }, secondsBetween * 1000)
-  
-  // Store the configuration
-  healthChecks.set(event.channelId, { interval, url, secondsBetween })
-  
-  await handler.sendMessage(
-    event.channelId,
-    `Health check configured! Monitoring ${url} every ${secondsBetween} seconds`
-  )
-})
-
-bot.onSlashCommand("stop-healthcheck", async (handler, event) => {
-  const config = healthChecks.get(event.channelId)
-  if (config) {
-    clearInterval(config.interval)
-    healthChecks.delete(event.channelId)
-    await handler.sendMessage(event.channelId, "Health check monitoring stopped")
-  } else {
-    await handler.sendMessage(event.channelId, "No health check configured for this channel")
   }
+  await handler.sendMessage(event.channelId, `Yes: ${poll.yes}, No: ${poll.no}`)
 })
+
+export default bot.start()
 ```
 
-### Key Patterns for External Integration
-
-1. **Store Channel IDs**: Collect channel IDs from slash commands or messages
-2. **External Triggers**: Use webhooks, timers, or API calls to trigger messages
-3. **Direct Method Calls**: Call `bot.sendMessage()` directly, not through handlers
-4. **Error Handling**: Always handle errors when sending unprompted messages
-5. **Persistence**: Use a database for production storage of channel configurations
-
-### Available Bot Methods Outside Handlers
+### B.3 Token Balance Bot
 
 ```typescript
-// All these methods work outside event handlers:
-await bot.sendMessage(channelId, message, opts?)
-await bot.editMessage(channelId, messageId, newMessage)
-await bot.sendReaction(channelId, messageId, reaction)
-await bot.removeEvent(channelId, eventId)
-await bot.adminRemoveEvent(channelId, eventId)
-await bot.hasAdminPermission(userId, spaceId)
-await bot.checkPermission(channelId, userId, permission)
-await bot.ban(userId, spaceId)  // Requires ModifyBanning permission
-await bot.unban(userId, spaceId)  // Requires ModifyBanning permission
+import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
+import { readContract } from 'viem/actions'
+import { formatUnits, erc20Abi } from 'viem'
 
-// Access bot properties:
-bot.botId      // Bot's user ID (address)
-bot.viem       // Viem client with Account for Web3 operations
-bot.appAddress // Bot's app contract address (SimpleAccount)
+const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+const commands = [{ name: 'balance', description: 'Check USDC balance' }] as const
 
-// For Web3 operations:
-import { readContract, writeContract } from 'viem/actions'
-import { execute } from 'viem/experimental/erc7821'
+const bot = await makeTownsBot(
+  process.env.APP_PRIVATE_DATA!,
+  process.env.JWT_SECRET!,
+  { commands, baseRpcUrl: process.env.BASE_RPC_URL }
+)
 
-// Read from any contract
-await readContract(bot.viem, { address, abi, functionName, args })
-
-// Write to bot's own SimpleAccount contract ONLY
-await writeContract(bot.viem, { address: bot.appAddress, abi: simpleAppAbi, functionName, args })
-
-// Execute any onchain interaction (PRIMARY METHOD for external contracts)
-await execute(bot.viem, {
-  address: bot.appAddress,
-  account: bot.viem.account,
-  calls: [{ to, abi, functionName, args, value }]
+bot.onSlashCommand('balance', async (handler, event) => {
+  const targetUserId = event.mentions[0]?.userId || event.userId
+  const wallet = await getSmartAccountFromUserId(bot, { userId: targetUserId })
+  
+  if (!wallet) {
+    await handler.sendMessage(event.channelId, '❌ No smart account found')
+    return
+  }
+  
+  const balance = await readContract(bot.viem, {
+    address: USDC,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [wallet]
+  })
+  
+  await handler.sendMessage(event.channelId, `💰 Balance: ${formatUnits(balance, 6)} USDC`)
 })
+
+export default bot.start()
 ```
 
-**Important Notes:**
-- You must have a valid `channelId` to send messages
-- Store channel IDs from events (slash commands, messages, etc.)
-- Handle cases where no channel is configured
-- Consider rate limiting to avoid overwhelming channels
-- Always wrap external calls in try-catch for error handling
+### B.4 Miniapp HTML Template
 
-## Troubleshooting Guide
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Miniapp</title>
+  <meta name="fc:miniapp" content='{"version":"1","imageUrl":"https://your-domain.com/preview.png","button":{"title":"Open App","action":{"type":"launch_miniapp","name":"My Miniapp","url":"https://your-domain.com/app.html","splashBackgroundColor":"#0b0618"}}}' />
+  <style>
+    body { font-family: system-ui; padding: 20px; margin: 0; background: #1a1a2e; color: #fff; }
+    #loading { text-align: center; padding: 40px; }
+    #app { display: none; }
+    .card { background: #16213e; padding: 20px; border-radius: 12px; margin-bottom: 16px; }
+    .wallet { font-family: monospace; background: #0f3460; padding: 8px; border-radius: 4px; word-break: break-all; }
+    button { background: #e94560; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="loading">⏳ Loading...</div>
+  <div id="app">
+    <div class="card">
+      <h2>Welcome, <span id="username">User</span>!</h2>
+      <p>User ID: <span class="wallet" id="user-id"></span></p>
+      <p>Primary Wallet: <span class="wallet" id="wallet"></span></p>
+    </div>
+    <button onclick="closeApp()">Close</button>
+  </div>
 
-### Issue: Bot doesn't respond to messages
+  <script type="module">
+    import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk@0.2.1'
 
-**Checklist:**
-1. YES Is `APP_PRIVATE_DATA` valid and base64 encoded?
-2. YES Is `JWT_SECRET` correct?
-3. YES Is the webhook URL accessible from internet?
-4. YES Is the forwarding setting correct? (ALL_MESSAGES vs MENTIONS_REPLIES_REACTIONS)
+    async function init() {
+      try {
+        // Initialize SDK with timeout protection
+        try {
+          await Promise.race([
+            sdk.actions.ready(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+          ])
+        } catch (e) {
+          console.warn('ready() timed out, continuing...')
+        }
 
-### Issue: Lost context between events
+        // Get Towns context
+        const context = await Promise.race([
+          sdk.context,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+        ])
 
-**Solution:** In-memory storage only works if bot runs 24/7. Data is lost on restart.
-```typescript
-// WRONG - Will lose data on bot restart or crash
-let counter = 0
-bot.onMessage(() => counter++)
+        if (!context?.towns?.user?.userId) {
+          throw new Error('Missing Towns user data')
+        }
 
-// CORRECT - Persists across restarts
-const db = new Database()
-bot.onMessage(() => db.increment('counter'))
-```
-### Issue: Can't mention users
+        // Display user data
+        document.getElementById('username').textContent = context.user?.displayName || 'User'
+        document.getElementById('user-id').textContent = context.towns.user.userId
+        document.getElementById('wallet').textContent = context.towns.user.address
+        document.getElementById('loading').style.display = 'none'
+        document.getElementById('app').style.display = 'block'
+      } catch (error) {
+        console.error('Init failed:', error)
+        document.getElementById('loading').textContent = '❌ Failed to load'
+      }
+    }
 
-**Format:**
-```typescript
-// NO WRONG
-await handler.sendMessage(channelId, "@username hello")
-
-// YES CORRECT
-await handler.sendMessage(channelId, "Hello <@0x1234...>", {
-  mentions: [{
-    userId: "0x1234...",
-    displayName: "username"
-  }]
-})
-```
-
-## Environment Configuration
-
-### Required Environment Variables
-```bash
-APP_PRIVATE_DATA=<base64_encoded_bot_credentials>
-JWT_SECRET=<webhook_security_token>
-PORT=3000  # Optional, defaults to 3000
-
-# For persistent storage (optional)
-DATABASE_URL=postgresql://...
-REDIS_URL=redis://...
-```
-
-### Development Setup
-```bash
-# 1. Install dependencies
-yarn install
-
-# 2. Create .env file
-cp .env.sample .env
-# Edit .env with your credentials
-
-# 3. Build and run
-yarn build
-yarn start
-
-# 4. For development with hot reload
-yarn dev
-```
-
-
-## Common Gotchas for AI Agents
-
-1. **User IDs are addresses**: Always in format `0x...`, not usernames
-2. **No DM/GDM support yet**: Not supported yet
-3. **Slash commands are exclusive**: They never trigger `onMessage`
-4. **Thread/Reply IDs only**: You never get the original message content
-5. **Forwarding settings matter**: Bot may not receive all messages. Bot developer must set the forwarding setting correctly. `ALL_MESSAGES` or `MENTIONS_REPLIES_REACTIONS`
-6. **Encryption is automatic**: Never handle encryption manually
-7. **Multiple handlers allowed**: All registered handlers for an event will fire
-
-## Quick Command Reference
-
-```bash
-# Development
-yarn dev                # Start with hot reload
-yarn build             # Build for production
-yarn start             # Run production build
-yarn test              # Run tests
-yarn lint              # Check code quality
-yarn typecheck         # Verify types
+    window.closeApp = () => sdk.actions.close().catch(() => {})
+    init()
+  </script>
+</body>
+</html>
 ```
 
-## Summary for AI Agents
+---
 
-To build a Towns bot:
+## Official Resources
 
-1. **Understand limitations**: Stateless, no history, isolated events
-2. **Choose storage strategy**: Based on your hosting environment
-3. **Implement handlers**: Focus on single-event responses
-4. **Handle context externally**: Use database/in-memory for state
-5. **Deploy appropriately**: Match hosting to storage needs
-
-Remember: The bot framework handles encryption, authentication, and routing. You focus on business logic within the constraints of stateless event processing.
+- **Documentation:** https://docs.towns.com/build/bots/
+- **Developer Portal:** https://app.towns.com/developer
+- **SDK:** https://www.npmjs.com/package/@towns-protocol/bot
+- **LLMs.txt:** https://docs.towns.com/llms.txt
+- **Base Explorer:** https://basescan.org
+- **Chain ID:** 8453 (Base Mainnet)
